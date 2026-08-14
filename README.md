@@ -43,6 +43,14 @@ npm start
 > 等待期间窗口显示**真实进度条**（由真实事件驱动：进程启动 → 配置写入 →
 > 端口监听 → 界面就绪，只前进不后退、不伪造百分比）+ **实时日志尾流** + 已等待计时。
 
+## 开发自检
+
+| 命令 | 作用 |
+|---|---|
+| `npm run smoke` | 环境自检：DSH 启动器是否就位、3080 端口状态（退出码 0=正常 / 1=缺启动器 / 2=脚本异常） |
+| `npm run check` | 源码语法检查（全部 JS 文件） |
+| `npm run gen:icon` | 重新生成图标到 `assets/` |
+
 ## 使用说明
 
 | 操作 | 行为 |
@@ -80,8 +88,11 @@ DSH 子进程输出与程序运行日志保存在：
   并解析实际地址加载；托盘提示与「浏览器打开」均使用真实地址。
 - **提示未找到 DSH 启动器**：先运行一次 `npx @deepseek-ai/dsh --profile web`
   初始化 `%USERPROFILE%\.dsh`，再启动本程序。
-- **打包安装版**：`npm run dist`（生成 NSIS 安装包 + 便携版到 `dist/`；
-  首次运行会自动下载打包工具，约 50MB，已配置 npmmirror 镜像加速）。
+- **打包安装版**：`npm run dist`（生成 NSIS 安装包 + 便携版到 `dist/`）。
+  首次运行需下载打包工具（electron、NSIS 等）。若报错
+  `unable to verify the first certificate`，先执行 `set NODE_OPTIONS=--use-system-ca`；
+  下载慢可执行 `set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries`
+  走 npmmirror 镜像（结尾**不要**加斜杠）。
 
 ## 项目结构
 
@@ -98,6 +109,9 @@ DSH_DESK/
 │   ├── smoke.js         # 环境自检（npm run smoke）
 │   └── run-electron.js  # electron 启动包装（移除 ELECTRON_RUN_AS_NODE）
 ├── assets/              # 生成的图标
+├── 启动 DSH Desk（推荐）.vbs   # 静默启动器（推荐双击）
+├── 启动 DSH Desk（备用）.bat   # 备用启动器（会闪一下控制台）
+├── .npmrc               # npm 国内镜像配置
 └── package.json
 ```
 
