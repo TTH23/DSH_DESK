@@ -1,0 +1,56 @@
+{
+  "name": "dsh-desk",
+  "productName": "DSH Desk",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 桌面托盘程序：内嵌启动 dsh web、无命令行窗口、最小化到系统托盘",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/run-electron.js .",
+    "gen:icon": "node scripts/gen-icon.mjs",
+    "smoke": "node scripts/smoke.js",
+    "check": "node --check src/main.js && node --check src/dsh-manager.js && node --check src/tray.js && node --check src/preload.js",
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "license": "MIT",
+  "author": "DSH Desk",
+  "allowScripts": {
+    "electron": true
+  },
+  "build": {
+    "appId": "com.dshdesk.app",
+    "productName": "DSH Desk",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DSH Desk",
+      "artifactName": "DSH-Desk-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "DSH-Desk-Portable-${version}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3"
+  }
+}

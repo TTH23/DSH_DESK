@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>DSH Desk</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(1200px 600px at 50% -10%, #10223f 0%, #0b0d12 60%);
+    color: #d7e3f4; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .wrap { width: 480px; text-align: center; user-select: none; }
+  .logo {
+    width: 64px; height: 64px; margin: 0 auto; border-radius: 16px;
+    background: linear-gradient(180deg, #167af2, #0a3d91);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 8px 32px rgba(22, 122, 242, 0.35);
+  }
+  .logo .bubble {
+    width: 40px; height: 30px; border-radius: 9px; background: #fff; position: relative;
+  }
+  .logo .bubble::after {
+    content: ""; position: absolute; left: 6px; bottom: -6px;
+    width: 12px; height: 12px; background: #fff; border-radius: 3px;
+    transform: rotate(45deg);
+  }
+  .logo .bubble .bar {
+    position: absolute; left: 7px; height: 4px; border-radius: 2px; background: #0a3d91;
+  }
+  .logo .bubble .bar.b1 { top: 6px; width: 26px; }
+  .logo .bubble .bar.b2 { top: 13px; width: 16px; }
+  .logo .bubble .bar.b3 { top: 20px; width: 26px; }
+  #stageLabel { margin-top: 24px; font-size: 15px; min-height: 22px; }
+  .bar {
+    margin-top: 16px; height: 8px; border-radius: 4px;
+    background: rgba(215, 227, 244, 0.12); overflow: hidden;
+  }
+  #barFill {
+    height: 100%; width: 0%; border-radius: 4px;
+    background: linear-gradient(90deg, #167af2, #4da3ff);
+    transition: width 0.6s ease;
+  }
+  .meta {
+    display: flex; justify-content: space-between; margin-top: 8px;
+    font-size: 12px; color: #7f92ab;
+  }
+  #elapsed { font-variant-numeric: tabular-nums; }
+  #logTail {
+    margin-top: 18px; text-align: left;
+    font-family: Consolas, "Courier New", monospace; font-size: 11px; line-height: 1.5;
+    color: #8fa3c0; background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px;
+    padding: 8px 10px; height: 96px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #errorBox {
+    display: none; margin-top: 16px; padding: 10px 12px; border-radius: 8px;
+    background: rgba(255, 80, 80, 0.12); border: 1px solid rgba(255, 80, 80, 0.4);
+    color: #ff9d9d; font-size: 12px; text-align: left;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #errorBox.show { display: block; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="logo"><div class="bubble"><div class="bar b1"></div><div class="bar b2"></div><div class="bar b3"></div></div></div>
+    <div id="stageLabel">正在启动 DeepSeek Harness 服务…</div>
+    <div class="bar"><div id="barFill"></div></div>
+    <div class="meta"><span id="stagePct">0%</span><span id="elapsed">已等待 00:00</span></div>
+    <div id="logTail"></div>
+    <div id="errorBox"></div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const startedAt = Date.now();
+    const tick = () => {
+      const s = Math.floor((Date.now() - startedAt) / 1000);
+      const mm = String(Math.floor(s / 60)).padStart(2, '0');
+      const ss = String(s % 60).padStart(2, '0');
+      $('elapsed').textContent = '已等待 ' + mm + ':' + ss;
+    };
+    setInterval(tick, 1000);
+    tick();
+
+    // 实时日志尾流：dsh 子进程的真实输出（正常时极少，失败时错误行会实时出现）
+    const logLines = [];
+    function pushLog(stream, text) {
+      for (const line of String(text).split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t) continue;
+        logLines.push((stream === 'err' ? '✗ ' : '  ') + t);
+      }
+      const tail = $('logTail');
+      tail.textContent = logLines.slice(-8).join('\n');
+      tail.scrollTop = tail.scrollHeight;
+    }
+
+    if (window.dshDesk && window.dshDesk.onEvent) {
+      window.dshDesk.onEvent((data) => {
+        if (data.type === 'stage') {
+          const pct = data.pct || 0;
+          $('stageLabel').textContent = data.label || '';
+          $('barFill').style.width = pct + '%';
+          $('stagePct').textContent = pct + '%';
+        } else if (data.type === 'log') {
+          pushLog(data.stream, data.text);
+        } else if (data.type === 'failed') {
+          $('barFill').style.background = 'linear-gradient(90deg, #ff5a5a, #ff8c8c)';
+          $('stageLabel').textContent = '启动失败';
+          $('stagePct').textContent = '';
+          $('errorBox').textContent = data.message || '';
+          $('errorBox').classList.add('show');
+        }
+      });
+    }
+  </script>
+</body>
+</html>

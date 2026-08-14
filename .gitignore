@@ -1,0 +1,8 @@
+node_modules/
+.npm-cache/
+.electron-cache/
+.builder-cache/
+.tmp/
+dist/
+out/
+*.log
