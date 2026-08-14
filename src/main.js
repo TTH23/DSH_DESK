@@ -1,6 +1,6 @@
 'use strict';
 // DSH Desk —— DeepSeek Harness 桌面托盘程序
-// 主进程：管理窗口、托盘、开机自启，以及 DSH 服务进程的生命周期
+// 主进程：管理窗口（支持多窗口）、托盘、开机自启，以及 DSH 服务进程的生命周期
 const { app, BrowserWindow, dialog, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -20,12 +20,13 @@ const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 // 设置 Windows AppUserModelID：任务栏右键菜单/分组按此显示应用名，避免显示成 "Electron"
 app.setAppUserModelId('com.dshdesk.app');
 
-let mainWindow = null;
+let mainWindow = null; // 主窗口：托盘开关、加载进度页、错误弹窗使用
 let trayCtl = null;
 let manager = null;
 let isQuitting = false;
 let autoStartEnabled = false;
 let loadRetries = 0;
+const windows = new Set(); // 所有窗口（含主窗口），用于多窗口管理
 
 // ---------- 开机自启（HKCU Run 键） ----------
 function autoStartCommand() {
@@ -58,8 +59,14 @@ function setAutoStart(enabled) {
 }
 
 // ---------- 窗口 ----------
-function createWindow() {
-  mainWindow = new BrowserWindow({
+/**
+ * 创建窗口。
+ * @param {object} [opts]
+ * @param {boolean} [opts.primary] 主窗口（默认 true）：点 ✕ 隐藏到托盘；附加窗口点 ✕ 直接关闭
+ */
+function createWindow(opts = {}) {
+  const isPrimary = opts.primary !== false;
+  const win = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 860,
@@ -76,31 +83,31 @@ function createWindow() {
       preload: PRELOAD_JS,
     },
   });
-  mainWindow.setMenuBarVisibility(false);
+  win.setMenuBarVisibility(false);
 
-  // 窗口标题固定为 "DSH Desk"：DSH 页面自带 <title>（如 "DeepSeek Harness"）
-  // 加载后会覆盖标题栏，这里阻止页面标题生效
-  mainWindow.webContents.on('page-title-updated', (e) => {
+  // 窗口标题固定为 "DSH Desk"：DSH 页面自带 <title>（如 "DeepSeek Harness"）会覆盖标题栏
+  win.webContents.on('page-title-updated', (e) => {
     e.preventDefault();
   });
 
-  // 关闭 / 最小化 → 隐藏到托盘（服务继续运行）
-  mainWindow.on('close', (e) => {
-    if (!isQuitting) {
+  // 主窗口点 ✕ → 隐藏到托盘（服务继续运行）；附加窗口点 ✕ → 直接关闭
+  win.on('close', (e) => {
+    if (!isQuitting && isPrimary) {
       e.preventDefault();
-      mainWindow.hide();
+      win.hide();
     }
   });
-  mainWindow.on('closed', () => {
-    mainWindow = null;
+  win.on('closed', () => {
+    windows.delete(win);
+    if (win === mainWindow) mainWindow = null;
   });
 
   // 外部链接交给系统浏览器
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  mainWindow.webContents.on('will-navigate', (e, url) => {
+  win.webContents.on('will-navigate', (e, url) => {
     if (/^https?:/i.test(url) && !url.includes('127.0.0.1') && !url.includes('localhost')) {
       e.preventDefault();
       shell.openExternal(url);
@@ -108,34 +115,44 @@ function createWindow() {
   });
 
   // DSH 界面加载失败自动重试（ERR_ABORTED=-3 是正常取消，不重试）
-  mainWindow.webContents.on('did-fail-load', (_e, code, _desc, validatedURL, isMainFrame) => {
+  win.webContents.on('did-fail-load', (_e, code, _desc, validatedURL, isMainFrame) => {
     if (!isMainFrame || code === -3) return;
     if (manager && manager.url && validatedURL === manager.url && loadRetries < 8) {
       loadRetries++;
-      setTimeout(() => navigateTo(manager.url, true), 1200);
+      setTimeout(() => navigateTo(win, manager.url, true), 1200);
     }
   });
-  mainWindow.webContents.on('did-finish-load', () => {
+  win.webContents.on('did-finish-load', () => {
     loadRetries = 0;
   });
+
+  windows.add(win);
+  if (isPrimary) mainWindow = win;
+
+  // 服务已就绪 → 加载 DSH 界面；否则加载启动进度页
+  if (manager && manager.url) {
+    navigateTo(win, manager.url);
+  } else {
+    win.loadFile(LOADING_HTML).catch(() => {});
+  }
+  return win;
 }
 
-function navigateTo(url, force = false) {
-  if (!mainWindow || !url) return;
+function navigateTo(win, url, force = false) {
+  if (!win || win.isDestroyed() || !url) return;
   // 普通调用：已在目标地址则跳过；force=true（加载失败重试）时强制重新加载，
   // 因为 did-fail-load 后 getURL() 仍可能是失败的那个 URL，会被上面的判断挡掉
-  if (!force && mainWindow.webContents.getURL() === url) return;
-  loadRetries = 0;
-  mainWindow.loadURL(url).catch(() => {});
+  if (!force && win.webContents.getURL() === url) return;
+  win.loadURL(url).catch(() => {});
 }
 
 function showMainWindow() {
-  if (!mainWindow) createWindow();
+  if (!mainWindow) createWindow({ primary: true });
   if (mainWindow.isMinimized()) mainWindow.restore();
   if (manager && manager.url) {
-    navigateTo(manager.url);
+    navigateTo(mainWindow, manager.url);
   } else if (!mainWindow.webContents.getURL()) {
-    mainWindow.loadFile(LOADING_HTML);
+    mainWindow.loadFile(LOADING_HTML).catch(() => {});
   }
   mainWindow.show();
   mainWindow.focus();
@@ -154,6 +171,33 @@ function toggleWindow() {
     mainWindow.hide();
   } else {
     showMainWindow();
+  }
+}
+
+/** 新建一个独立窗口（多任务并行） */
+function newWindow() {
+  const win = createWindow({ primary: false });
+  win.show();
+  win.focus();
+}
+
+/** Windows 任务栏跳转列表：添加「新建窗口」任务 */
+function setupJumpList() {
+  if (process.platform !== 'win32') return;
+  try {
+    const args = app.isPackaged ? '--new-window' : `"${APP_DIR}" --new-window`;
+    app.setUserTasks([
+      {
+        program: process.execPath,
+        arguments: args,
+        iconPath: TRAY_ICON_PATH,
+        iconIndex: 0,
+        title: '新建窗口',
+        description: '打开一个新的 DSH Desk 窗口',
+      },
+    ]);
+  } catch {
+    /* 跳转列表设置失败不影响主功能 */
   }
 }
 
@@ -193,6 +237,7 @@ function createTrayUI() {
       updateStatus();
     },
     onToggleWindow: toggleWindow,
+    onNewWindow: newWindow,
     onOpenBrowser: () => {
       if (manager && manager.url) shell.openExternal(manager.url);
     },
@@ -230,13 +275,19 @@ async function quit() {
 async function init() {
   try {
     if (!app.requestSingleInstanceLock()) {
-      // 已有实例在运行：让主实例把窗口带出来，本实例兜底强制退出
+      // 已有实例在运行：让主实例处理（带出窗口或新建窗口），本实例兜底强制退出
       // （app.quit() 挂起时会出现“启动无反应/黑屏”，用定时器确保进程结束）
       app.quit();
       setTimeout(() => process.exit(0), 1500);
       return;
     }
-    app.on('second-instance', () => showMainWindow());
+    app.on('second-instance', (_e, argv) => {
+      if (argv.includes('--new-window')) {
+        newWindow(); // 任务栏跳转列表「新建窗口」→ 在现有实例中开新窗口
+      } else {
+        showMainWindow();
+      }
+    });
 
     manager = new DshManager({ logDir: path.join(app.getPath('userData'), 'logs') });
     manager.on('stage', (stage) => {
@@ -246,7 +297,10 @@ async function init() {
     manager.on('ready', ({ url, attached }) => {
       updateStatus();
       sendToWindow('ready', { url, attached });
-      if (mainWindow && mainWindow.isVisible()) navigateTo(url);
+      // 所有窗口（含最小化/不可见）都切到 DSH 界面
+      for (const win of windows) {
+        if (!win.isDestroyed()) navigateTo(win, url);
+      }
     });
     manager.on('stopped', updateStatus);
     manager.on('log', (entry) => sendToWindow('log', entry));
@@ -275,6 +329,7 @@ async function init() {
 
     autoStartEnabled = await isAutoStartEnabled();
     createTrayUI();
+    setupJumpList();
 
     const startServer = () => manager.start().catch(() => {});
     if (process.argv.includes('--autostart')) {

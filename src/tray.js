@@ -17,6 +17,7 @@ const STATUS_TEXT = {
  * @param {() => boolean} opts.isAutoStart
  * @param {(enabled: boolean) => void} opts.onToggleAutoStart
  * @param {() => void} opts.onToggleWindow
+ * @param {() => void} [opts.onNewWindow] 新建窗口（多任务并行）
  * @param {() => void} opts.onOpenBrowser
  * @param {() => void} opts.onStart
  * @param {() => void} opts.onStop
@@ -38,6 +39,7 @@ function createTray(opts) {
       { label: `状态：${statusText}${url ? ' · ' + url : ''}`, enabled: false },
       { type: 'separator' },
       { label: '显示 / 隐藏主界面', click: opts.onToggleWindow },
+      { label: '新建窗口', enabled: Boolean(opts.onNewWindow), click: opts.onNewWindow },
       { label: '在浏览器中打开', enabled: Boolean(url), click: opts.onOpenBrowser },
       { type: 'separator' },
       { label: '启动 DSH 服务', enabled: stopped, click: opts.onStart },
