@@ -17,6 +17,9 @@ const PRELOAD_JS = path.join(__dirname, 'preload.js');
 const AUTOSTART_VALUE = 'DSH Desk';
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 
+// 设置 Windows AppUserModelID：任务栏右键菜单/分组按此显示应用名，避免显示成 "Electron"
+app.setAppUserModelId('com.dshdesk.app');
+
 let mainWindow = null;
 let trayCtl = null;
 let manager = null;
@@ -88,9 +91,6 @@ function createWindow() {
       mainWindow.hide();
     }
   });
-  mainWindow.on('minimize', () => {
-    mainWindow.hide();
-  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -131,6 +131,7 @@ function navigateTo(url, force = false) {
 
 function showMainWindow() {
   if (!mainWindow) createWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
   if (manager && manager.url) {
     navigateTo(manager.url);
   } else if (!mainWindow.webContents.getURL()) {
@@ -141,7 +142,15 @@ function showMainWindow() {
 }
 
 function toggleWindow() {
-  if (mainWindow && mainWindow.isVisible()) {
+  if (!mainWindow) {
+    showMainWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    // 已最小化 → 恢复（不触发隐藏）
+    mainWindow.restore();
+    mainWindow.focus();
+  } else if (mainWindow.isVisible()) {
     mainWindow.hide();
   } else {
     showMainWindow();
