@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('dshDesk', {
 });
 
 // ---------- 窗口配色 ----------
+const PRESETS = ['#4da3ff', '#34d399', '#22d3ee', '#a78bfa', '#f472b6', '#fb923c', '#f87171', '#94a3b8'];
 const BTN_SIZE = 40;
 let currentColor = null; // '#rrggbb' 或 null
 let winId = null;
@@ -149,13 +150,21 @@ function buildPalette() {
   clear.addEventListener('click', () => pick(null));
   titleRow.appendChild(title);
   titleRow.appendChild(clear);
-  // 自定义颜色（整行）
-  const custom = document.createElement('input');
-  custom.type = 'color';
-  custom.style.cssText = 'width:100%;height:30px;border:none;background:none;cursor:pointer;padding:0;';
-  custom.addEventListener('input', () => pick(custom.value));
+  // 预设色板网格（只提供预设，不提供自定义取色）
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;';
+  for (const c of PRESETS) {
+    const sw = document.createElement('div');
+    sw.style.cssText =
+      `height:26px;border-radius:8px;background:${c};cursor:pointer;` +
+      'border:2px solid rgba(255,255,255,.08);';
+    sw.dataset.color = c;
+    sw.title = c;
+    sw.addEventListener('click', () => pick(c));
+    grid.appendChild(sw);
+  }
   root.appendChild(titleRow);
-  root.appendChild(custom);
+  root.appendChild(grid);
   return root;
 }
 
