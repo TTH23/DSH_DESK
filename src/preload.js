@@ -649,11 +649,11 @@ function checkTaskState() {
     idleTicks = 0;
     return;
   }
-  // 当前会话内空闲：先确认两次（同一会话、无排队）才发"任务完成"
+  // 当前会话内空闲：先确认两次（同一会话、无排队）才发"任务完成"（附会话名）
   if (wasTaskRunning) {
     idleTicks++;
     if (idleTicks >= 2 && !hasQueuedMessages()) {
-      ipcRenderer.send('dsh-desk:task-complete');
+      ipcRenderer.send('dsh-desk:task-complete', { session: sesKey });
       wasTaskRunning = false;
       idleTicks = 0;
     }

@@ -114,9 +114,10 @@ ipcMain.on('dsh-desk:theme-mode', (_event, mode) => {
   saveThemeStore();
 });
 
-// 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知
-ipcMain.on('dsh-desk:task-complete', () => {
-  notifyIf('task', '任务完成', 'DeepSeek Harness 已完成任务');
+// 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知（附会话名）
+ipcMain.on('dsh-desk:task-complete', (_event, data) => {
+  const session = data && typeof data.session === 'string' && data.session.trim() ? data.session.trim() : '';
+  notifyIf('task', '任务完成', session ? `「${session}」已完成` : 'DeepSeek Harness 已完成任务');
 });
 
 // 托盘「通知 → 测试通知」：验证系统通知是否正常落地
