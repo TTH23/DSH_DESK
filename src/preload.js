@@ -105,6 +105,47 @@ function positionPalette() {
   }
 }
 
+// 颜色工具：hex → rgba（用于派生半透明变体）
+function hexToRgb(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+function rgba(hex, alpha) {
+  const c = hexToRgb(hex);
+  return c ? `rgba(${c.r},${c.g},${c.b},${alpha})` : hex;
+}
+
+// 真实页面元素着色：覆盖 DSH 主题 token（按钮/链接/选中态/悬停底色跟随所选色）。
+// 用 !important 的 :root + [data-ds-dark-theme] 规则压过应用自带样式。
+const THEME_TOKEN_VARS = [
+  ['--dsw-alias-brand-primary', (c) => c],
+  ['--dsw-alias-state-business-primary', (c) => c],
+  ['--dsw-alias-state-business-tertiary', (c) => rgba(c, 0.22)],
+  ['--dsw-alias-interactive-bg-hover', (c) => rgba(c, 0.12)],
+  ['--dsw-alias-interactive-bg-active', (c) => rgba(c, 0.18)],
+];
+
+function applyTokenOverrides(color) {
+  let style = document.getElementById('dsh-desk-theme-override');
+  if (!color) {
+    if (style) style.remove();
+    return;
+  }
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'dsh-desk-theme-override';
+    document.documentElement.appendChild(style);
+  }
+  const lines = [':root, [data-ds-dark-theme] {'];
+  for (const [name, derive] of THEME_TOKEN_VARS) {
+    lines.push(`  ${name}: ${derive(color)} !important;`);
+  }
+  lines.push('}');
+  style.textContent = lines.join('\n');
+}
+
 function applyTheme(color) {
   currentColor = color;
   // 顶部主题色条
@@ -117,6 +158,8 @@ function applyTheme(color) {
     document.documentElement.appendChild(bar);
   }
   bar.style.background = color || 'transparent';
+  // 真实页面元素着色
+  applyTokenOverrides(color);
   // 按钮底色跟随主题色
   const btn = document.getElementById('dsh-desk-palette-btn');
   if (btn) {
@@ -227,11 +270,12 @@ function initPicker() {
   document.documentElement.appendChild(buildPalette());
   applyTheme(currentColor);
 
-  // 跟随布局变化：滚动/缩放/输入框高度变化等；定时探测页面就绪并重新对齐
+  // 跟随布局变化：滚动/缩放/输入框高度变化等；定时探测页面就绪、重放主题色覆盖并重新对齐
   window.addEventListener('scroll', positionPalette, true);
   window.addEventListener('resize', positionPalette);
   setInterval(() => {
     checkPageReady();
+    applyTokenOverrides(currentColor); // 防止深浅主题切换/重渲染时被重置
     positionPalette();
   }, 1200);
 }
