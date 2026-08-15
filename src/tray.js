@@ -14,6 +14,9 @@ const STATUS_TEXT = {
  * @param {object} opts
  * @param {string} opts.iconPath 托盘图标（32x32 PNG）
  * @param {() => { state: string, url: string|null }} opts.getState
+ * @param {() => { keyConfigured: boolean, balance: number|null, spent: number|null, error: string|null }} [opts.getUsage]
+ * @param {() => void} [opts.onRefreshUsage]
+ * @param {() => void} [opts.onResetUsage]
  * @param {() => boolean} opts.isAutoStart
  * @param {(enabled: boolean) => void} opts.onToggleAutoStart
  * @param {() => void} opts.onToggleWindow
@@ -30,6 +33,26 @@ function createTray(opts) {
   const tray = new Tray(nativeImage.createFromPath(opts.iconPath));
   tray.setToolTip('DSH Desk');
 
+  const fmt = (v) => (v === null || v === undefined ? '--' : v.toFixed(2));
+
+  function usageItems() {
+    if (typeof opts.getUsage !== 'function') return [];
+    const u = opts.getUsage();
+    let label;
+    if (!u.keyConfigured) {
+      label = '用量：未配置 API Key';
+    } else if (u.error) {
+      label = '用量：查询失败（' + u.error + '）';
+    } else {
+      label = `用量：余额 ¥${fmt(u.balance)} · 本次消费 ¥${fmt(u.spent)}`;
+    }
+    return [
+      { label, enabled: false },
+      { label: '刷新用量', click: opts.onRefreshUsage },
+      { label: '清零小计', click: opts.onResetUsage },
+    ];
+  }
+
   function buildMenu() {
     const { state, url } = opts.getState();
     const statusText = STATUS_TEXT[state] || state;
@@ -37,6 +60,7 @@ function createTray(opts) {
     const stopped = state === 'stopped' || state === 'failed';
     return Menu.buildFromTemplate([
       { label: `状态：${statusText}${url ? ' · ' + url : ''}`, enabled: false },
+      ...usageItems(),
       { type: 'separator' },
       { label: '显示 / 隐藏主界面', click: opts.onToggleWindow },
       { label: '新建窗口', enabled: Boolean(opts.onNewWindow), click: opts.onNewWindow },

@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { execFile, spawn } = require('node:child_process');
 const { DshManager } = require('./dsh-manager');
+const { UsageTracker } = require('./usage');
 const { createTray } = require('./tray');
 
 const APP_DIR = path.join(__dirname, '..');
@@ -24,6 +25,7 @@ app.setAppUserModelId('com.dshdesk.app');
 let mainWindow = null; // 主窗口：托盘开关、加载进度页、错误弹窗使用
 let trayCtl = null;
 let manager = null;
+let usage = null; // DeepSeek 用量跟踪（余额 + 本次启动消费）
 let isQuitting = false;
 let autoStartEnabled = false;
 const windows = new Set(); // 所有窗口（含主窗口），用于多窗口管理
@@ -401,6 +403,13 @@ function createTrayUI() {
       state: manager ? manager.state : 'stopped',
       url: manager ? manager.url : null,
     }),
+    getUsage: () => (usage ? usage.snapshot() : null),
+    onRefreshUsage: () => {
+      if (usage) usage.refresh().catch(() => {});
+    },
+    onResetUsage: () => {
+      if (usage) usage.resetBaseline();
+    },
     isAutoStart: () => autoStartEnabled,
     onToggleAutoStart: async (enabled) => {
       await setAutoStart(enabled);
@@ -448,6 +457,7 @@ async function quit() {
       /* ignore */
     }
   }
+  if (usage) usage.stop();
   app.quit();
 }
 
@@ -513,6 +523,12 @@ async function init() {
     });
 
     autoStartEnabled = await isAutoStartEnabled();
+
+    // DeepSeek 用量跟踪：余额 + 本次启动消费（基线 = 启动时余额），每 60s 刷新
+    usage = new UsageTracker();
+    usage.on('updated', updateStatus);
+    usage.start(60000);
+
     createTrayUI();
     setupJumpList();
 
