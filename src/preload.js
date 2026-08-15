@@ -22,6 +22,16 @@ function getThemeState() {
   return ipcRenderer.invoke('dsh-desk:theme-get');
 }
 
+// 其他窗口改了模式/颜色 → 主进程广播同步，本窗口立即生效
+ipcRenderer.on('dsh-desk:theme-sync', (_event, t) => {
+  if (!t) return;
+  if (['window', 'workspace', 'session'].includes(t.mode)) themeMode = t.mode;
+  if (t.workspaceColors && typeof t.workspaceColors === 'object') wsColors = t.workspaceColors;
+  if (t.sessionColors && typeof t.sessionColors === 'object') sesColors = t.sessionColors;
+  applyTheme(resolveColor());
+  updatePaletteUI();
+});
+
 // ---------- 窗口配色状态 ----------
 const PRESETS = ['#4da3ff', '#34d399', '#22d3ee', '#a78bfa', '#f472b6', '#fb923c', '#f87171', '#94a3b8'];
 const BTN_SIZE = 40;
@@ -69,16 +79,11 @@ function detectContext() {
   return { wsKey, sesKey };
 }
 
-const ACTION_LABEL_RE = /工作区["“「]([^"”」]+)["”」]|Workspace actions for (.+)/;
-const WS_ACTION_SEL = 'button[aria-label*="的操作"], button[aria-label*="Workspace actions"]';
-
-// 作用域内第一个"工作区行"（role=treeitem 且含工作区操作按钮）
-function findWorkspaceRowIn(scope) {
-  for (const el of scope.querySelectorAll('[role="treeitem"]')) {
-    if (el.querySelector(WS_ACTION_SEL)) return el;
-  }
-  return null;
-}
+const ACTION_LABEL_RE = /^工作区["“「]([^"”」]+)["”」]|^Workspace actions for (.+)/;
+// 只匹配真正的工作区行：操作按钮 aria-label 以 工作区/Workspace actions 开头
+// （会话行是 "会话"{name}"的操作"，不能算）
+const WS_ACTION_SEL =
+  'button[aria-label^="工作区"], button[aria-label^="Workspace actions"]';
 
 function workspaceNameOf(row) {
   const btn = row.querySelector(WS_ACTION_SEL);
@@ -86,48 +91,27 @@ function workspaceNameOf(row) {
   return m ? (m[1] || m[2] || '').trim() : '';
 }
 
-// 侧边栏工作区树定位（默认"按工作区"分组视图）：
-// 工作区行与其会话行是同一分组容器（groupSection）下的同级兄弟，需在容器内查找。
-// ① 当前会话行（aria-selected=true）→ 向上找包含工作区行的分组容器；
-// ② 回退：按当前会话标题匹配分组区文本
+// 侧边栏工作区定位（对 HoverCard wrapper 免疫）：
+// 每行被 <span> wrapper 包裹（HoverCard），会话行与工作区行是同一分组区下的兄弟。
+// 从每个工作区行出发，向上找到同时含会话行的分组区，再匹配当前会话标题。
 function detectWorkspaceInSidebar(sesKey) {
-  const cur = document.querySelector('[role="treeitem"][aria-selected="true"]');
-  if (cur) {
-    let node = cur.parentElement;
+  if (!sesKey) return null;
+  for (const row of document.querySelectorAll('[role="treeitem"]')) {
+    if (!row.querySelector(WS_ACTION_SEL)) continue;
+    const name = workspaceNameOf(row);
+    if (!name) continue;
+    // 向上找同时包含会话行的容器 = 该工作区的分组区
+    let section = row.parentElement;
     let hops = 0;
-    while (node && node !== document.body && hops < 3) {
-      const wsRow = findWorkspaceRowIn(node);
-      if (wsRow) {
-        const name = workspaceNameOf(wsRow);
-        if (name) return name;
-      }
-      // 该层已有 treeitem 直接子元素（分组容器）但无工作区行 → 未分组，停止
-      const hasTreeChild = Array.from(node.children).some(
-        (c) => c.getAttribute && c.getAttribute('role') === 'treeitem'
+    while (section && section !== document.body && hops < 4) {
+      const hasSession = Array.from(section.querySelectorAll('[role="treeitem"]')).some(
+        (r) => r !== row && !r.querySelector(WS_ACTION_SEL)
       );
-      if (hasTreeChild) return null;
+      if (hasSession) break;
       hops++;
-      node = node.parentElement;
+      section = section.parentElement;
     }
-  }
-  if (sesKey) {
-    for (const row of document.querySelectorAll('[role="treeitem"]')) {
-      if (!row.querySelector(WS_ACTION_SEL)) continue;
-      const name = workspaceNameOf(row);
-      if (!name) continue;
-      let section = row.parentElement;
-      while (section && section !== document.body) {
-        if (
-          Array.from(section.children).some(
-            (c) => c.getAttribute && c.getAttribute('role') === 'treeitem'
-          )
-        ) {
-          break;
-        }
-        section = section.parentElement;
-      }
-      if (section && section.textContent.includes(sesKey)) return name;
-    }
+    if (section && section.textContent.includes(sesKey)) return name;
   }
   return null;
 }

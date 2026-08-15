@@ -105,6 +105,7 @@ ipcMain.on('dsh-desk:theme-set', (_event, { scope, key, color }) => {
     return; // 非法输入：忽略
   }
   saveThemeStore();
+  broadcastThemeState();
 });
 
 // 切换跟随模式（互斥；window 模式不持久化颜色）
@@ -112,7 +113,22 @@ ipcMain.on('dsh-desk:theme-mode', (_event, mode) => {
   if (!['window', 'workspace', 'session'].includes(mode)) return;
   themeStore.mode = mode;
   saveThemeStore();
+  broadcastThemeState();
 });
+
+// 主题状态变化 → 同步给所有窗口（多窗口模式/颜色保持一致）
+function broadcastThemeState() {
+  const state = {
+    mode: themeStore.mode,
+    workspaceColors: themeStore.workspaceColors,
+    sessionColors: themeStore.sessionColors,
+  };
+  for (const win of windows) {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send('dsh-desk:theme-sync', state);
+    }
+  }
+}
 
 // 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知（附会话名）
 ipcMain.on('dsh-desk:task-complete', (_event, data) => {
