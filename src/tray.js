@@ -88,25 +88,16 @@ function createTray(opts) {
     return items;
   }
 
-  // 状态行：IP 只保留端口，避免过长
-  function portOf(url) {
-    if (!url) return '';
-    try {
-      return new URL(url).port || url;
-    } catch {
-      return url;
-    }
-  }
-
-  // 用量数据行（主菜单直接显示；只留数字，尽量短）
-  function usageLine() {
-    if (typeof opts.getUsage !== 'function') return null;
+  // 用量信息（主菜单直接显示，拆成两行：余额 / 本次消费）
+  function usageInfoItems() {
+    if (typeof opts.getUsage !== 'function') return [];
     const u = opts.getUsage();
-    let text;
-    if (!u.keyConfigured) text = '用量：未配置 Key';
-    else if (u.error) text = `用量失败：${u.error}`;
-    else text = `¥${fmt(u.balance)} · 消费 ¥${fmt(u.spent)}`;
-    return { label: truncate(text), enabled: false };
+    if (!u.keyConfigured) return [{ label: '用量：未配置 Key', enabled: false }];
+    if (u.error) return [{ label: truncate(`用量失败：${u.error}`), enabled: false }];
+    return [
+      { label: `余额 ¥${fmt(u.balance)}`, enabled: false },
+      { label: `本次消费 ¥${fmt(u.spent)}`, enabled: false },
+    ];
   }
 
   function buildMenu() {
@@ -115,16 +106,14 @@ function createTray(opts) {
     const running = state === 'running';
     const stopped = state === 'stopped' || state === 'failed';
     const infoItems = [
-      { label: truncate(`${STATE_ICON[state] || '○'} ${statusText}${url ? ' · ' + portOf(url) : ''}`), enabled: false },
+      { label: `${STATE_ICON[state] || '○'} ${statusText}`, enabled: false },
+      ...usageInfoItems(),
     ];
-    const ul = usageLine();
-    if (ul) infoItems.push(ul);
     return Menu.buildFromTemplate([
       ...infoItems,
       { type: 'separator' },
-      { label: '显示 / 隐藏主界面', click: opts.onToggleWindow },
       { label: '新建窗口', enabled: Boolean(opts.onNewWindow), click: opts.onNewWindow },
-      { label: '在浏览器中打开', enabled: Boolean(url), click: opts.onOpenBrowser },
+      { label: '打开网页', enabled: Boolean(url), click: opts.onOpenBrowser },
       { type: 'separator' },
       {
         label: '服务',
@@ -140,7 +129,7 @@ function createTray(opts) {
       { label: '通知', submenu: notificationMenu() },
       { type: 'separator' },
       {
-        label: '开机自动启动',
+        label: '开机自启',
         type: 'checkbox',
         checked: Boolean(opts.isAutoStart()),
         click: (item) => opts.onToggleAutoStart(item.checked),
