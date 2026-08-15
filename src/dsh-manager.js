@@ -455,6 +455,18 @@ class DshManager extends EventEmitter {
     this.childPid = child ? child.pid : null;
     this.startedByUs = true;
     this._logLine('info', `adopted deployed instance ${url} (pid=${this.childPid})`);
+    if (child) {
+      // 兜底：被接管的部署进程异常退出时，状态自动转 stopped（正常停止走 stop() 的进程树清理）
+      child.once('exit', (code) => {
+        if (this.child !== child) return;
+        this.state = 'stopped';
+        this.url = null;
+        this.child = null;
+        this.childPid = null;
+        this._logLine('info', `adopted dsh exited (code=${code})`);
+        this.emit('stopped');
+      });
+    }
     this.emit('ready', { url, attached: false });
     return this.url;
   }

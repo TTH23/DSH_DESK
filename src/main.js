@@ -26,7 +26,6 @@ let trayCtl = null;
 let manager = null;
 let isQuitting = false;
 let autoStartEnabled = false;
-let loadRetries = 0;
 const windows = new Set(); // 所有窗口（含主窗口），用于多窗口管理
 
 // ---------- 开机自启（HKCU Run 键） ----------
@@ -116,15 +115,17 @@ function createWindow(opts = {}) {
   });
 
   // DSH 界面加载失败自动重试（ERR_ABORTED=-3 是正常取消，不重试）
+  // 重试计数挂在窗口自身（win._loadRetries），多窗口互不干扰
+  win._loadRetries = 0;
   win.webContents.on('did-fail-load', (_e, code, _desc, validatedURL, isMainFrame) => {
     if (!isMainFrame || code === -3) return;
-    if (manager && manager.url && validatedURL === manager.url && loadRetries < 8) {
-      loadRetries++;
+    if (manager && manager.url && validatedURL === manager.url && win._loadRetries < 8) {
+      win._loadRetries++;
       setTimeout(() => navigateTo(win, manager.url, true), 1200);
     }
   });
   win.webContents.on('did-finish-load', () => {
-    loadRetries = 0;
+    win._loadRetries = 0;
   });
 
   windows.add(win);
@@ -211,15 +212,13 @@ function updateStatus() {
   }
 }
 
-// 把 DSH 启动进度事件转发给加载页（loading.html 通过 preload 接收）
+// 把 DSH 启动进度事件转发给所有窗口的加载页（loading.html 通过 preload 接收）
 function sendToWindow(type, payload) {
-  if (
-    mainWindow &&
-    !mainWindow.isDestroyed() &&
-    mainWindow.webContents &&
-    !mainWindow.webContents.isDestroyed()
-  ) {
-    mainWindow.webContents.send('dsh-desk:event', { type, ...payload });
+  const data = { type, ...payload };
+  for (const win of windows) {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send('dsh-desk:event', data);
+    }
   }
 }
 
@@ -287,7 +286,18 @@ async function deployHarness() {
     if (isQuitting) return;
     const probe = await probeServer(DEFAULT_PORT);
     if (probe === 'dsh') {
-      manager.adopt(`http://127.0.0.1:${DEFAULT_PORT}`, child);
+      if (child.exitCode === null) {
+        // 部署进程仍存活 → 接管归本程序所有
+        manager.adopt(`http://127.0.0.1:${DEFAULT_PORT}`, child);
+      } else {
+        // 部署进程已退出但 3080 已有 DSH（用户可能手动起了实例）：
+        // 按普通附着处理，不接管外部进程
+        manager._logLine(
+          'info',
+          'deploy child exited before ready but DSH is up on 3080; attaching instead of adopting'
+        );
+        manager.start().catch(() => {});
+      }
       deployChild = null;
       return;
     }
