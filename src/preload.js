@@ -175,6 +175,21 @@ function pick(color) {
   if (palette) palette.style.display = 'none';
 }
 
+// 页面是否“正常”：锚点（设置键/发送键/输入框）已渲染且稳定出现（连续 2 次探测），
+// 避免在页面加载/骨架屏阶段过早显示悬浮球
+let pageReadyCount = 0;
+
+function checkPageReady() {
+  const anchor = findSettingsButton() || findComposer().sendBtn || findComposer().textarea;
+  pageReadyCount = anchor ? pageReadyCount + 1 : 0;
+  if (pageReadyCount >= 2) {
+    const btn = document.getElementById('dsh-desk-palette-btn');
+    if (btn && btn.style.display === 'none') {
+      btn.style.display = 'flex';
+    }
+  }
+}
+
 function initPicker() {
   if (document.getElementById('dsh-desk-palette-btn')) return;
   const btn = document.createElement('div');
@@ -184,8 +199,8 @@ function initPicker() {
   btn.style.cssText =
     `position:fixed;width:${BTN_SIZE}px;height:${BTN_SIZE}px;border-radius:50%;` +
     'z-index:2147483646;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4);' +
-    'display:flex;align-items:center;justify-content:center;font-size:18px;' +
-    'opacity:.92;transition:opacity .15s;';
+    'display:none;align-items:center;justify-content:center;font-size:18px;' +
+    'opacity:.92;transition:opacity .15s;'; // 初始隐藏，页面正常后才显示
   btn.addEventListener('mouseenter', () => {
     btn.style.opacity = '1';
   });
@@ -212,10 +227,13 @@ function initPicker() {
   document.documentElement.appendChild(buildPalette());
   applyTheme(currentColor);
 
-  // 跟随布局变化：滚动/缩放/输入框高度变化等
+  // 跟随布局变化：滚动/缩放/输入框高度变化等；定时探测页面就绪并重新对齐
   window.addEventListener('scroll', positionPalette, true);
   window.addEventListener('resize', positionPalette);
-  setInterval(positionPalette, 1200);
+  setInterval(() => {
+    checkPageReady();
+    positionPalette();
+  }, 1200);
 }
 
 function onDomReady() {
