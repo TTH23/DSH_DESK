@@ -29,7 +29,8 @@ let autoStartEnabled = false;
 const windows = new Set(); // 所有窗口（含主窗口），用于多窗口管理
 
 // ---------- 窗口配色（每窗口独立主题色，持久化到 userData/theme.json） ----------
-let themeStore = { nextId: 2, windows: {} }; // 附加窗口从 2 开始编号；主窗口固定 1
+let themeStore = { mode: 'window', workspaceColors: {}, sessionColors: {} };
+// mode: 'window'（本窗口临时色，不持久化）| 'workspace'（按工作区记忆）| 'session'（按会话记忆）
 
 function themeFile() {
   return path.join(app.getPath('userData'), 'theme.json');
@@ -38,9 +39,15 @@ function themeFile() {
 function loadThemeStore() {
   try {
     const parsed = JSON.parse(fs.readFileSync(themeFile(), 'utf8'));
-    if (parsed && typeof parsed.nextId === 'number' && parsed.windows && typeof parsed.windows === 'object') {
-      themeStore = parsed;
-      if (themeStore.nextId < 2) themeStore.nextId = 2;
+    if (parsed && typeof parsed === 'object') {
+      const mode = ['window', 'workspace', 'session'].includes(parsed.mode) ? parsed.mode : 'window';
+      themeStore = {
+        mode,
+        workspaceColors:
+          parsed.workspaceColors && typeof parsed.workspaceColors === 'object' ? parsed.workspaceColors : {},
+        sessionColors:
+          parsed.sessionColors && typeof parsed.sessionColors === 'object' ? parsed.sessionColors : {},
+      };
     }
   } catch {
     /* 首次运行：使用默认 */
@@ -55,30 +62,44 @@ function saveThemeStore() {
   }
 }
 
-function windowColor(winId) {
-  return themeStore.windows[String(winId)] || null;
-}
-
 function nextWinId() {
-  const id = themeStore.nextId;
-  themeStore.nextId = id + 1;
-  saveThemeStore();
-  return id;
+  // 仅用于窗口显示编号；窗口色不再按窗口持久化
+  const n = (themeStore.__winSeq || 1) + 1;
+  themeStore.__winSeq = n;
+  return n;
 }
 
-// 窗口调色板选色/清除：校验 hex → 持久化 → 回发应用
-ipcMain.on('dsh-desk:set-color', (event, color) => {
+// 读取主题状态（预加载页初始化用）
+ipcMain.handle('dsh-desk:theme-get', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win._winId === undefined) return;
+  return {
+    mode: themeStore.mode,
+    workspaceColors: themeStore.workspaceColors,
+    sessionColors: themeStore.sessionColors,
+    winId: win ? win._winId : 1,
+  };
+});
+
+// 按工作区/会话记忆颜色：校验 hex → 存入对应表
+ipcMain.on('dsh-desk:theme-set', (_event, { scope, key, color }) => {
+  if (scope !== 'workspace' && scope !== 'session') return;
+  if (typeof key !== 'string' || key.trim() === '') return;
+  const map = scope === 'workspace' ? themeStore.workspaceColors : themeStore.sessionColors;
   if (color === null || color === undefined || color === '') {
-    delete themeStore.windows[String(win._winId)];
+    delete map[key];
   } else if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) {
-    themeStore.windows[String(win._winId)] = color.toLowerCase();
+    map[key] = color.toLowerCase();
   } else {
     return; // 非法输入：忽略
   }
   saveThemeStore();
-  win.webContents.send('dsh-desk:theme', { color: windowColor(win._winId), winId: win._winId });
+});
+
+// 切换跟随模式（互斥；window 模式不持久化颜色）
+ipcMain.on('dsh-desk:theme-mode', (_event, mode) => {
+  if (!['window', 'workspace', 'session'].includes(mode)) return;
+  themeStore.mode = mode;
+  saveThemeStore();
 });
 
 // ---------- 开机自启（HKCU Run 键） ----------
@@ -141,13 +162,7 @@ function createWindow(opts = {}) {
   win.setMenuBarVisibility(false);
   win._winId = winId;
 
-  // DSH 界面加载完成 → 下发该窗口的配色（preload 应用顶栏/按钮色）
-  win.webContents.on('did-finish-load', () => {
-    win._loadRetries = 0;
-    if (win.webContents.getURL().startsWith('http')) {
-      win.webContents.send('dsh-desk:theme', { color: windowColor(win._winId), winId: win._winId });
-    }
-  });
+  // DSH 界面加载完成 → 重置加载重试计数（主题状态由 preload 自行通过 IPC 获取）
 
   // 窗口标题固定为 "DSH Desk"：DSH 页面自带 <title>（如 "DeepSeek Harness"）会覆盖标题栏
   win.webContents.on('page-title-updated', (e) => {
@@ -187,6 +202,9 @@ function createWindow(opts = {}) {
       win._loadRetries++;
       setTimeout(() => navigateTo(win, manager.url, true), 1200);
     }
+  });
+  win.webContents.on('did-finish-load', () => {
+    win._loadRetries = 0;
   });
 
   windows.add(win);

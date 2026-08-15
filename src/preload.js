@@ -1,24 +1,79 @@
 'use strict';
 // 预加载桥：
 // 1) 把主进程的 stage/log/ready/failed 事件转发给加载页（loading.html）
-// 2) 窗口配色：在 DSH 网页内注入悬浮调色板（每窗口独立），选色后给该窗口
-//    加主题色顶栏 + 彩色按钮，用于多窗口互相区分（颜色由主进程按窗口持久化）
-// 3) 调色板按钮动态锚定到设置键（侧边栏底部齿轮，aria-haspopup=dialog）正上方，
-//    避免遮挡交互区；找不到时回退到发送键/输入框上方，再回退到安全位置，
-//    并持续跟随布局变化（滚动/缩放/重渲染）
+// 2) 窗口配色（每窗口独立）：
+//    - 菜单：预设色板 + 清除 + 互斥跟随开关（颜色随工作区 / 颜色随会话）
+//    - 跟随模式下按工作区/会话标题记忆颜色（持久化到 theme.json），切换时自动换色
+//    - 都关闭 = 窗口固定色：只在本窗口会话内生效，重启回归默认（不持久化）
+//    - 点选颜色不自动关闭菜单
+// 3) 调色板按钮动态锚定到设置键（侧边栏底部齿轮）正上方、贴左边缘，
+//    找不到时回退到发送键/输入框上方，再回退到安全位置；页面正常后才显示
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('dshDesk', {
   onEvent: (callback) => {
     ipcRenderer.on('dsh-desk:event', (_event, data) => callback(data));
   },
+  getTheme: () => ipcRenderer.invoke('dsh-desk:theme-get'),
 });
 
-// ---------- 窗口配色 ----------
+// preload 隔离世界内直接用 ipcRenderer（window.dshDesk 只存在于页面世界）
+function getThemeState() {
+  return ipcRenderer.invoke('dsh-desk:theme-get');
+}
+
+// ---------- 窗口配色状态 ----------
 const PRESETS = ['#4da3ff', '#34d399', '#22d3ee', '#a78bfa', '#f472b6', '#fb923c', '#f87171', '#94a3b8'];
 const BTN_SIZE = 40;
-let currentColor = null; // '#rrggbb' 或 null
-let winId = null;
+const WS_PLACEHOLDERS = ['选择工作区', 'Choose workspace'];
+const WS_SELECTOR =
+  'button[aria-label="选择工作区"], button[aria-label="Choose workspace"]';
+const SESS_NAV_SELECTOR =
+  'nav[aria-label="会话层级"], nav[aria-label="Session hierarchy"]';
+
+let themeMode = 'window'; // window | workspace | session
+let wsColors = {}; // 工作区标题 → 颜色
+let sesColors = {}; // 会话标题 → 颜色
+let winLabel = '窗口 1';
+let windowColor = null; // window 模式：本窗口临时色（不持久化）
+let currentColor = null; // 当前已应用的颜色
+let lastWorkspaceKey = ''; // 最近一次可见的工作区标题（会话内回退用）
+let prevWsKey = null;
+let prevSesKey = null;
+let stateLoaded = false;
+
+// 会话层级 nav 里当前会话（disabled 的 crumb）文本 = 当前会话标题
+function detectContext() {
+  let wsKey = '';
+  const wsBtn = document.querySelector(WS_SELECTOR);
+  if (wsBtn) {
+    const label = (wsBtn.textContent || '').trim();
+    if (label && !WS_PLACEHOLDERS.includes(label)) wsKey = label;
+  }
+  if (wsKey) lastWorkspaceKey = wsKey;
+  let sesKey = '';
+  const nav = document.querySelector(SESS_NAV_SELECTOR);
+  if (nav) {
+    const cur = nav.querySelector('button[disabled]');
+    if (cur) sesKey = (cur.textContent || '').trim();
+  }
+  return { wsKey: wsKey || lastWorkspaceKey, sesKey };
+}
+
+// 当前应显示的颜色：按模式 + 上下文解析（无匹配 → 默认）
+function resolveColor() {
+  const { wsKey, sesKey } = detectContext();
+  if (themeMode === 'workspace') return wsKey ? wsColors[wsKey] || null : null;
+  if (themeMode === 'session') return sesKey ? sesColors[sesKey] || null : null;
+  return windowColor;
+}
+
+function contextLabel() {
+  const { wsKey, sesKey } = detectContext();
+  if (themeMode === 'workspace') return wsKey ? `工作区 ${wsKey} 配色` : '工作区配色（未检测到）';
+  if (themeMode === 'session') return sesKey ? `会话 ${sesKey} 配色` : '会话配色（未检测到）';
+  return `${winLabel} 配色`;
+}
 
 // 查找设置触发键：侧边栏底部的齿轮按钮（aria-haspopup=dialog，含 "设置"/"Settings" 文案或为最左侧的 dialog 触发键）
 function findSettingsButton() {
@@ -105,7 +160,7 @@ function positionPalette() {
   }
 }
 
-// 颜色工具：hex → rgba（用于派生半透明变体）
+// 颜色工具：hex → rgba / lighten（用于派生半透明与浅色变体）
 function hexToRgb(hex) {
   const m = /^#([0-9a-f]{6})$/i.exec(hex);
   if (!m) return null;
@@ -146,7 +201,6 @@ function applyTokenOverrides(color) {
   const body = document.body;
   if (!color) {
     if (style) style.remove();
-    // 移除 body 内联覆盖
     if (body) {
       for (const [name] of THEME_TOKEN_VARS) body.style.removeProperty(name);
     }
@@ -161,7 +215,6 @@ function applyTokenOverrides(color) {
   for (const [name, derive] of THEME_TOKEN_VARS) {
     const value = derive(color);
     lines.push(`  ${name}: ${value} !important;`);
-    // 双保险：body 内联 !important（防主题运行时以同样方式覆盖）
     if (body) body.style.setProperty(name, value, 'important');
   }
   lines.push('}');
@@ -180,7 +233,6 @@ function applyTheme(color) {
     document.documentElement.appendChild(bar);
   }
   bar.style.background = color || 'transparent';
-  // 真实页面元素着色
   applyTokenOverrides(color);
   // 按钮底色跟随主题色
   const btn = document.getElementById('dsh-desk-palette-btn');
@@ -192,30 +244,109 @@ function applyTheme(color) {
   }
 }
 
+// ---------- 选色 / 清除 / 模式 ----------
+function pick(color) {
+  if (themeMode === 'window') {
+    windowColor = color; // 本窗口临时色，不持久化
+    applyTheme(windowColor);
+    return;
+  }
+  const { wsKey, sesKey } = detectContext();
+  const key = themeMode === 'workspace' ? wsKey : sesKey;
+  if (key) {
+    const map = themeMode === 'workspace' ? wsColors : sesColors;
+    if (color) map[key] = color;
+    else delete map[key];
+    ipcRenderer.send('dsh-desk:theme-set', { scope: themeMode, key, color });
+    applyTheme(color);
+  } else {
+    // 无法解析跟随目标：退化为本窗口临时色（不持久化）
+    windowColor = color;
+    applyTheme(windowColor);
+  }
+}
+
+function setMode(mode) {
+  if (mode !== 'window' && mode !== 'workspace' && mode !== 'session') return;
+  themeMode = mode;
+  ipcRenderer.send('dsh-desk:theme-mode', mode);
+  applyTheme(resolveColor());
+  updatePaletteUI();
+}
+
+// ---------- 面板 UI ----------
+function updatePaletteUI() {
+  const label = document.getElementById('dsh-desk-theme-label');
+  if (label) label.textContent = contextLabel();
+  const wsDot = document.getElementById('dsh-desk-mode-ws');
+  const sesDot = document.getElementById('dsh-desk-mode-ses');
+  if (wsDot) {
+    wsDot.textContent = themeMode === 'workspace' ? '●' : '○';
+    wsDot.style.color = themeMode === 'workspace' ? '#4da3ff' : '#5c6b84';
+  }
+  if (sesDot) {
+    sesDot.textContent = themeMode === 'session' ? '●' : '○';
+    sesDot.style.color = themeMode === 'session' ? '#4da3ff' : '#5c6b84';
+  }
+}
+
 function buildPalette() {
   const root = document.createElement('div');
   root.id = 'dsh-desk-palette';
   root.style.cssText =
     'position:fixed;z-index:2147483647;background:#10141c;' +
     'border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:10px 12px;' +
-    'box-shadow:0 8px 32px rgba(0,0,0,.5);display:none;width:200px;' +
+    'box-shadow:0 8px 32px rgba(0,0,0,.5);display:none;width:216px;' +
     'font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:#d7e3f4;';
-  // 标题行：窗口名（左）+ 清除按钮（右），节省高度
+
+  // 标题行：跟随目标（左）+ 清除（右）
   const titleRow = document.createElement('div');
   titleRow.style.cssText =
-    'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
+    'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
   const title = document.createElement('div');
-  title.style.cssText = 'font-size:12px;color:#9fb0c9;';
-  title.textContent = `窗口 ${winId ?? ''} 配色`;
+  title.id = 'dsh-desk-theme-label';
+  title.style.cssText = 'font-size:12px;color:#9fb0c9;max-width:150px;overflow:hidden;' +
+    'text-overflow:ellipsis;white-space:nowrap;';
   const clear = document.createElement('button');
   clear.textContent = '清除';
   clear.style.cssText =
     'padding:2px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.2);' +
-    'background:transparent;color:#9fb0c9;cursor:pointer;font-size:12px;';
+    'background:transparent;color:#9fb0c9;cursor:pointer;font-size:12px;flex:none;';
   clear.addEventListener('click', () => pick(null));
   titleRow.appendChild(title);
   titleRow.appendChild(clear);
-  // 预设色板网格（只提供预设，不提供自定义取色）
+
+  // 互斥跟随开关
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;flex-direction:column;gap:2px;margin-bottom:8px;';
+  const mkMode = (id, text, mode) => {
+    const row = document.createElement('div');
+    row.style.cssText =
+      'display:flex;align-items:center;gap:6px;cursor:pointer;padding:3px 4px;' +
+      'border-radius:6px;font-size:12px;color:#c3d0e4;user-select:none;';
+    row.addEventListener('mouseenter', () => {
+      row.style.background = 'rgba(255,255,255,.06)';
+    });
+    row.addEventListener('mouseleave', () => {
+      row.style.background = 'transparent';
+    });
+    const dot = document.createElement('span');
+    dot.id = id;
+    dot.style.cssText = 'font-size:12px;width:12px;color:#5c6b84;';
+    const label = document.createElement('span');
+    label.textContent = text;
+    row.appendChild(dot);
+    row.appendChild(label);
+    row.addEventListener('click', () => {
+      // 互斥：点中当前项则关闭（回到窗口模式），否则切换
+      setMode(themeMode === mode ? 'window' : mode);
+    });
+    return row;
+  };
+  modeRow.appendChild(mkMode('dsh-desk-mode-ws', '颜色随工作区', 'workspace'));
+  modeRow.appendChild(mkMode('dsh-desk-mode-ses', '颜色随会话', 'session'));
+
+  // 预设色板网格
   const grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;';
   for (const c of PRESETS) {
@@ -228,20 +359,14 @@ function buildPalette() {
     sw.addEventListener('click', () => pick(c));
     grid.appendChild(sw);
   }
+
   root.appendChild(titleRow);
+  root.appendChild(modeRow);
   root.appendChild(grid);
   return root;
 }
 
-function pick(color) {
-  // 交给主进程校验并持久化；随后主进程回发 dsh-desk:theme 应用
-  ipcRenderer.send('dsh-desk:set-color', color);
-  const palette = document.getElementById('dsh-desk-palette');
-  if (palette) palette.style.display = 'none';
-}
-
-// 页面是否“正常”：锚点（设置键/发送键/输入框）已渲染且稳定出现（连续 2 次探测），
-// 避免在页面加载/骨架屏阶段过早显示悬浮球
+// 页面是否“正常”：锚点（设置键/发送键/输入框）已渲染且稳定出现（连续 2 次探测）
 let pageReadyCount = 0;
 
 function checkPageReady() {
@@ -249,10 +374,25 @@ function checkPageReady() {
   pageReadyCount = anchor ? pageReadyCount + 1 : 0;
   if (pageReadyCount >= 2) {
     const btn = document.getElementById('dsh-desk-palette-btn');
-    if (btn && btn.style.display === 'none') {
-      btn.style.display = 'flex';
-    }
+    if (btn && btn.style.display === 'none') btn.style.display = 'flex';
   }
+}
+
+async function initThemeState() {
+  try {
+    const t = await getThemeState();
+    if (t) {
+      themeMode = ['window', 'workspace', 'session'].includes(t.mode) ? t.mode : 'window';
+      wsColors = t.workspaceColors || {};
+      sesColors = t.sessionColors || {};
+      if (t.winId) winLabel = `窗口 ${t.winId}`;
+    }
+  } catch {
+    /* 保持默认 */
+  }
+  stateLoaded = true;
+  applyTheme(resolveColor());
+  updatePaletteUI();
 }
 
 function initPicker() {
@@ -276,7 +416,8 @@ function initPicker() {
     const palette = document.getElementById('dsh-desk-palette');
     if (palette) {
       palette.style.display = palette.style.display === 'none' ? 'block' : 'none';
-      positionPalette(); // 打开时重新对齐
+      updatePaletteUI();
+      positionPalette();
     }
   });
   // 点击面板与按钮之外任意处 → 关闭配色菜单
@@ -290,13 +431,21 @@ function initPicker() {
   });
   document.documentElement.appendChild(btn);
   document.documentElement.appendChild(buildPalette());
-  applyTheme(currentColor);
+  initThemeState();
 
-  // 跟随布局变化：滚动/缩放/输入框高度变化等；定时探测页面就绪、重放主题色覆盖并重新对齐
+  // 跟随布局变化与上下文变化
   window.addEventListener('scroll', positionPalette, true);
   window.addEventListener('resize', positionPalette);
   setInterval(() => {
     checkPageReady();
+    // 上下文（工作区/会话）变化 → 按新模式重算颜色
+    const { wsKey, sesKey } = detectContext();
+    if (wsKey !== prevWsKey || sesKey !== prevSesKey) {
+      prevWsKey = wsKey;
+      prevSesKey = sesKey;
+      applyTheme(resolveColor());
+      updatePaletteUI();
+    }
     applyTokenOverrides(currentColor); // 防止深浅主题切换/重渲染时被重置
     positionPalette();
   }, 1200);
@@ -312,13 +461,3 @@ if (document.readyState === 'loading') {
 } else {
   onDomReady();
 }
-
-// 主进程下发主题：{ color, winId }
-ipcRenderer.on('dsh-desk:theme', (_event, { color, winId: id }) => {
-  winId = id;
-  currentColor = color || null;
-  if (location.protocol === 'http:') {
-    if (!document.getElementById('dsh-desk-palette-btn')) initPicker();
-    applyTheme(currentColor);
-  }
-});
