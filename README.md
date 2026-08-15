@@ -30,6 +30,7 @@ v0.1.1 校验值：`c8180bffe1d966a97b33962f67767c93dfe5e1d46c97ba05e30a46a36c2c
 - ⚡ **开机自启**：托盘菜单勾选开关（写入 HKCU 注册表 Run 键）
 - 🌐 **浏览器打开**：需要时可在系统默认浏览器中打开界面
 - 🪟 **多窗口**：托盘菜单或任务栏右键「新建窗口」打开多个独立窗口，各自处理不同会话/任务，高效并行
+- 🛠️ **首次自动部署**：未部署 Harness 时弹窗一键自动安装（`npx @deepseek-ai/dsh --profile web`），取消即退出
 
 ## 运行环境
 
@@ -107,8 +108,9 @@ DSH 子进程输出与程序运行日志保存在：
 
 - **端口 3080 被其他程序占用**：程序会自动改用系统分配的随机端口，
   并解析实际地址加载；托盘提示与「浏览器打开」均使用真实地址。
-- **提示未找到 DSH 启动器**：先运行一次 `npx @deepseek-ai/dsh --profile web`
-  初始化 `%USERPROFILE%\.dsh`，再启动本程序。
+- **首次启动未部署 Harness**：程序检测不到 DSH 启动器时弹出对话框，
+  可选「**自动安装**」（自动运行 `npx @deepseek-ai/dsh --profile web` 部署并接管服务）
+  或「**取消**」（退出程序）。开机自启模式下检测不到则直接静默退出。
 - **打包安装版**：`npm run dist`（生成 NSIS 安装包 + 便携版到 `dist/`）。
   首次运行需下载打包工具（electron、NSIS 等）。若报错
   `unable to verify the first certificate`，先执行 `set NODE_OPTIONS=--use-system-ca`；

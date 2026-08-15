@@ -61,6 +61,27 @@ function resolveLauncher() {
   return null;
 }
 
+/** 定位 npm 的 npx-cli.js（首次部署用），找不到返回 null */
+function resolveNpxCli() {
+  const nodeCmd = resolveNodeCommand();
+  const candidates = [];
+  if (nodeCmd && nodeCmd !== 'node') {
+    candidates.push(path.join(path.dirname(nodeCmd), 'node_modules', 'npm', 'bin', 'npx-cli.js'));
+  }
+  candidates.push(
+    'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js',
+    'C:\\Program Files (x86)\\nodejs\\node_modules\\npm\\bin\\npx-cli.js'
+  );
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
 // ---------- 端口探测 ----------
 // 返回 'dsh'（已是 DSH 界面）| 'other'（端口被占用但不是 DSH）| 'none'（空闲）
 function probeServer(port, timeoutMs = 2000) {
@@ -425,6 +446,19 @@ class DshManager extends EventEmitter {
     });
   }
 
+  /** 首次部署完成后接管已就绪的 DSH 实例（由部署子进程启动，归本程序所有） */
+  adopt(url, child) {
+    this.state = 'running';
+    this.url = url;
+    this.port = portFromUrl(url) || DEFAULT_PORT;
+    this.child = child || null;
+    this.childPid = child ? child.pid : null;
+    this.startedByUs = true;
+    this._logLine('info', `adopted deployed instance ${url} (pid=${this.childPid})`);
+    this.emit('ready', { url, attached: false });
+    return this.url;
+  }
+
   /** 停止：附着实例不杀；自启实例杀进程树 */
   async stop() {
     const token = this._startToken;
@@ -446,4 +480,4 @@ class DshManager extends EventEmitter {
   }
 }
 
-module.exports = { DshManager, probeServer, dshHome, resolveLauncher, resolveNodeCommand, DEFAULT_PORT };
+module.exports = { DshManager, probeServer, dshHome, resolveLauncher, resolveNodeCommand, resolveNpxCli, DEFAULT_PORT };

@@ -91,6 +91,9 @@
           $('stageLabel').textContent = data.label || '';
           $('barFill').style.width = pct + '%';
           $('stagePct').textContent = pct + '%';
+          // 新的阶段（如首次部署）到来时，重置"启动失败"的红屏状态
+          $('barFill').style.background = 'linear-gradient(90deg, #167af2, #4da3ff)';
+          $('errorBox').classList.remove('show');
         } else if (data.type === 'log') {
           pushLog(data.stream, data.text);
         } else if (data.type === 'failed') {

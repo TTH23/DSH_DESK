@@ -4,7 +4,8 @@
 const { app, BrowserWindow, dialog, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { execFile } = require('node:child_process');
+const os = require('node:os');
+const { execFile, spawn } = require('node:child_process');
 const { DshManager } = require('./dsh-manager');
 const { createTray } = require('./tray');
 
@@ -222,6 +223,87 @@ function sendToWindow(type, payload) {
   }
 }
 
+// ---------- 首次部署 ----------
+let deployChild = null;
+
+/** NO_LAUNCHER：弹窗让用户选择「自动安装 / 取消」，取消即退出 */
+async function handleNoLauncher(message) {
+  if (process.argv.includes('--autostart')) {
+    // 自启模式：没有 Harness 无法运行，静默退出（不打扰用户）
+    app.quit();
+    return;
+  }
+  const opts = {
+    type: 'warning',
+    title: 'DSH Desk',
+    message: '尚未部署 DeepSeek Harness',
+    detail: `${message}\n\n是否现在自动安装？`,
+    buttons: ['自动安装', '取消'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  };
+  const box =
+    mainWindow && !mainWindow.isDestroyed()
+      ? dialog.showMessageBox(mainWindow, opts)
+      : dialog.showMessageBox(opts);
+  const { response } = await box;
+  if (response === 0) {
+    deployHarness();
+  } else {
+    quit();
+  }
+}
+
+/** 首次部署：运行 npx @deepseek-ai/dsh --profile web 初始化，服务就绪后接管 */
+async function deployHarness() {
+  if (isQuitting || !manager) return;
+  const { resolveNodeCommand, resolveNpxCli, dshHome, probeServer, DEFAULT_PORT } = require('./dsh-manager');
+  const nodeCmd = resolveNodeCommand();
+  const npxCli = resolveNpxCli();
+  sendToWindow('stage', { key: 'deploy', label: '正在首次部署 DeepSeek Harness…', pct: 25 });
+  if (!npxCli) {
+    dialog.showErrorBox(
+      '无法自动部署',
+      `未找到 npm/npx（Node 路径：${nodeCmd}）。请手动运行：\nnpx @deepseek-ai/dsh --profile web`
+    );
+    return;
+  }
+
+  const child = spawn(nodeCmd, [npxCli, '@deepseek-ai/dsh', '--profile', 'web'], {
+    windowsHide: true,
+    cwd: os.homedir(),
+    env: { ...process.env, DSH_HOME: dshHome(), NO_COLOR: '1', FORCE_COLOR: '0' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  deployChild = child;
+  child.stdout.on('data', (d) => manager.emit('log', { stream: 'deploy', text: d.toString() }));
+  child.stderr.on('data', (d) => manager.emit('log', { stream: 'deploy', text: d.toString() }));
+
+  // 轮询等待 3080 出现 DSH 界面（首次部署含下载/初始化，最多等 3 分钟）
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1200));
+    if (isQuitting) return;
+    const probe = await probeServer(DEFAULT_PORT);
+    if (probe === 'dsh') {
+      manager.adopt(`http://127.0.0.1:${DEFAULT_PORT}`, child);
+      deployChild = null;
+      return;
+    }
+    if (child.exitCode !== null) {
+      dialog.showErrorBox(
+        '首次部署失败',
+        `部署进程已退出（退出码 ${child.exitCode}）。请手动运行：\nnpx @deepseek-ai/dsh --profile web`
+      );
+      deployChild = null;
+      return;
+    }
+  }
+  dialog.showErrorBox('首次部署超时', '部署超时（3 分钟）。请手动运行：\nnpx @deepseek-ai/dsh --profile web');
+  deployChild = null;
+}
+
 // ---------- 托盘 ----------
 function createTrayUI() {
   trayCtl = createTray({
@@ -261,6 +343,15 @@ function createTrayUI() {
 // ---------- 退出 ----------
 async function quit() {
   isQuitting = true;
+  if (deployChild) {
+    // 部署进行中退出：清掉部署进程树，避免残留
+    try {
+      execFile('taskkill', ['/pid', String(deployChild.pid), '/T', '/F'], { windowsHide: true }, () => {});
+    } catch {
+      /* ignore */
+    }
+    deployChild = null;
+  }
   if (manager) {
     try {
       await manager.stop(); // 停掉由我们启动的 DSH 进程树
@@ -308,6 +399,10 @@ async function init() {
       updateStatus();
       sendToWindow('failed', { code, message });
       if (isQuitting) return;
+      if (code === 'NO_LAUNCHER') {
+        handleNoLauncher(message);
+        return;
+      }
       const full = `${message}\n\n诊断：${JSON.stringify(manager.getDiagnostics(), null, 2)}`;
       if (mainWindow && mainWindow.isVisible()) {
         dialog
