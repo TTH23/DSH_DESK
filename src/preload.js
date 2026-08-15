@@ -72,34 +72,82 @@ function detectContext() {
 const ACTION_LABEL_RE = /工作区["“「]([^"”」]+)["”」]|Workspace actions for (.+)/;
 const WS_ACTION_SEL = 'button[aria-label*="的操作"], button[aria-label*="Workspace actions"]';
 
-// 侧边栏工作区树定位：① 当前会话行（aria-selected=true）向上找所属工作区行；
-// ② 回退：包含当前会话标题的工作区行
+// 作用域内第一个"工作区行"（role=treeitem 且含工作区操作按钮）
+function findWorkspaceRowIn(scope) {
+  for (const el of scope.querySelectorAll('[role="treeitem"]')) {
+    if (el.querySelector(WS_ACTION_SEL)) return el;
+  }
+  return null;
+}
+
+function workspaceNameOf(row) {
+  const btn = row.querySelector(WS_ACTION_SEL);
+  const m = ACTION_LABEL_RE.exec((btn && btn.getAttribute('aria-label')) || '');
+  return m ? (m[1] || m[2] || '').trim() : '';
+}
+
+// 侧边栏工作区树定位（默认"按工作区"分组视图）：
+// 工作区行与其会话行是同一分组容器（groupSection）下的同级兄弟，需在容器内查找。
+// ① 当前会话行（aria-selected=true）→ 向上找包含工作区行的分组容器；
+// ② 回退：按当前会话标题匹配分组区文本
 function detectWorkspaceInSidebar(sesKey) {
   const cur = document.querySelector('[role="treeitem"][aria-selected="true"]');
   if (cur) {
     let node = cur.parentElement;
-    while (node && node !== document.body) {
-      if (node.getAttribute && node.getAttribute('role') === 'treeitem') {
-        const btn = node.querySelector(WS_ACTION_SEL);
-        if (btn) {
-          const m = ACTION_LABEL_RE.exec(btn.getAttribute('aria-label') || '');
-          const name = m ? (m[1] || m[2] || '').trim() : '';
-          if (name) return name;
-        }
+    let hops = 0;
+    while (node && node !== document.body && hops < 3) {
+      const wsRow = findWorkspaceRowIn(node);
+      if (wsRow) {
+        const name = workspaceNameOf(wsRow);
+        if (name) return name;
       }
+      // 该层已有 treeitem 直接子元素（分组容器）但无工作区行 → 未分组，停止
+      const hasTreeChild = Array.from(node.children).some(
+        (c) => c.getAttribute && c.getAttribute('role') === 'treeitem'
+      );
+      if (hasTreeChild) return null;
+      hops++;
       node = node.parentElement;
     }
   }
   if (sesKey) {
     for (const row of document.querySelectorAll('[role="treeitem"]')) {
-      const btn = row.querySelector(WS_ACTION_SEL);
-      if (!btn) continue;
-      const m = ACTION_LABEL_RE.exec(btn.getAttribute('aria-label') || '');
-      const name = m ? (m[1] || m[2] || '').trim() : '';
-      if (name && row.textContent.includes(sesKey)) return name;
+      if (!row.querySelector(WS_ACTION_SEL)) continue;
+      const name = workspaceNameOf(row);
+      if (!name) continue;
+      let section = row.parentElement;
+      while (section && section !== document.body) {
+        if (
+          Array.from(section.children).some(
+            (c) => c.getAttribute && c.getAttribute('role') === 'treeitem'
+          )
+        ) {
+          break;
+        }
+        section = section.parentElement;
+      }
+      if (section && section.textContent.includes(sesKey)) return name;
     }
   }
   return null;
+}
+
+// 工作区检测诊断（工作区模式仍解析不到时上报，便于定位真实 DOM 结构）
+function reportWorkspaceDiag(wsKey, sesKey) {
+  const rows = Array.from(document.querySelectorAll('[role="treeitem"]'));
+  const wsRows = rows.filter((r) => r.querySelector(WS_ACTION_SEL));
+  const ariaSelected = rows.filter((r) => r.getAttribute('aria-selected') === 'true').length;
+  ipcRenderer.send('dsh-desk:diag', {
+    wsKey: wsKey || '',
+    sesKey: sesKey || '',
+    treeitemCount: rows.length,
+    workspaceRowCount: wsRows.length,
+    ariaSelectedCount: ariaSelected,
+    wsRowLabels: wsRows.slice(0, 5).map((r) => {
+      const btn = r.querySelector(WS_ACTION_SEL);
+      return (btn && btn.getAttribute('aria-label')) || '';
+    }),
+  });
 }
 
 // 当前应显示的颜色：按模式 + 上下文解析（无匹配 → 默认）
@@ -545,6 +593,7 @@ function sendTitleIfNeeded() {
 
 // 上下文（工作区/会话）变化 → 按新模式重算颜色（即时监听与轮询共用）
 let followUpScheduled = false;
+let lastDiagAt = 0;
 function checkContextChanged() {
   const { wsKey, sesKey } = detectContext();
   if (wsKey !== prevWsKey || sesKey !== prevSesKey) {
@@ -559,6 +608,14 @@ function checkContextChanged() {
         followUpScheduled = false;
         checkContextChanged();
       }, 400);
+    }
+  }
+  // 工作区模式解析不到工作区 → 上报诊断（限频 10s，便于定位真实 DOM）
+  if (themeMode === 'workspace' && !wsKey) {
+    const now = Date.now();
+    if (now - lastDiagAt > 10000) {
+      lastDiagAt = now;
+      reportWorkspaceDiag(wsKey, sesKey);
     }
   }
 }

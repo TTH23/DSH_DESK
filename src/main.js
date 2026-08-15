@@ -130,6 +130,17 @@ ipcMain.on('dsh-desk:title', (event, text) => {
   if (win && !win.isDestroyed()) win.setTitle(text || 'DSH Desk');
 });
 
+// 工作区检测诊断（写入 logs/diag.log）
+ipcMain.on('dsh-desk:diag', (_event, data) => {
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, 'diag.log'), `${new Date().toISOString()} ${JSON.stringify(data)}\n`);
+  } catch {
+    /* ignore */
+  }
+});
+
 // ---------- 系统通知 ----------
 let notificationLogPath = null;
 
