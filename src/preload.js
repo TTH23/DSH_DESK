@@ -590,6 +590,31 @@ function hasQueuedMessages() {
   return Boolean(document.querySelector(QUEUE_SEL));
 }
 
+// 提取最后一条回复的开头文本（供完成通知第二行显示）
+function lastReplyText() {
+  try {
+    const scroll = document.querySelector('[data-conversation-scroll]');
+    if (!scroll) return '';
+    let items = Array.from(scroll.querySelectorAll('[class*="flowItem"]'));
+    if (!items.length) {
+      // 回退：结构定位——找含较多文本的深层块
+      const divs = Array.from(scroll.querySelectorAll('div'));
+      items = divs.filter((el) => (el.textContent || '').trim().length > 20 && el.querySelectorAll('div').length <= 4);
+    }
+    for (let i = items.length - 1; i >= 0; i--) {
+      const el = items[i];
+      // 跳过思考指示（role=status）、按钮行、空块
+      if (el.closest('[role="status"]') || el.querySelector('[role="status"]')) continue;
+      if (el.closest('button') || el.querySelector('button') && (el.textContent || '').trim().length < 30) continue;
+      const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text.length >= 4) return text;
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
 function checkTaskState() {
   const { sesKey } = detectContext();
   const running = Boolean(document.querySelector(STOP_BTN_SEL));
@@ -605,11 +630,11 @@ function checkTaskState() {
     idleTicks = 0;
     return;
   }
-  // 当前会话内空闲：先确认两次（同一会话、无排队）才发"任务完成"（附会话名）
+  // 当前会话内空闲：先确认两次（同一会话、无排队）才发"任务完成"（附会话名 + 回复开头）
   if (wasTaskRunning) {
     idleTicks++;
     if (idleTicks >= 2 && !hasQueuedMessages()) {
-      ipcRenderer.send('dsh-desk:task-complete', { session: sesKey });
+      ipcRenderer.send('dsh-desk:task-complete', { session: sesKey, reply: lastReplyText() });
       wasTaskRunning = false;
       idleTicks = 0;
     }
