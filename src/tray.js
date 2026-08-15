@@ -55,16 +55,19 @@ function createTray(opts) {
   function usageMenu() {
     if (typeof opts.getUsage !== 'function') return [];
     const u = opts.getUsage();
-    let label;
-    if (!u.keyConfigured) label = '未配置 API Key';
-    else if (u.error) label = `查询失败（${u.error}）`;
-    else label = `¥${fmt(u.balance)} · -¥${fmt(u.spent)}`;
-    return [
-      { label, enabled: false },
-      { type: 'separator' },
-      { label: '刷新用量', click: opts.onRefreshUsage },
-      { label: '清零小计', click: opts.onResetUsage },
-    ];
+    const items = [];
+    if (!u.keyConfigured) {
+      items.push({ label: '用量：未配置 Key', enabled: false });
+    } else if (u.error) {
+      items.push({ label: truncate(`用量失败：${u.error}`), enabled: false });
+    } else {
+      items.push({ label: `余额 ¥${fmt(u.balance)}`, enabled: false });
+      items.push({ label: `本次消费 -¥${fmt(u.spent)}`, enabled: false });
+    }
+    items.push({ type: 'separator' });
+    items.push({ label: '刷新用量', click: opts.onRefreshUsage });
+    items.push({ label: '清零小计', click: opts.onResetUsage });
+    return items;
   }
 
   function notificationMenu() {
