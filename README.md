@@ -10,15 +10,15 @@ Windows 10 / 11 桌面程序：把 DeepSeek Harness 的启动**内嵌到程序�
 
 | 文件 | 说明 |
 |---|---|
-| `DSH-Desk-v0.1.2-win32-x64.zip` | 免安装便携版：解压后双击 `DSH Desk.exe` 即可运行，**无需安装 Node.js** |
+| `DSH-Desk-v0.1.3-win32-x64.zip` | 免安装便携版：解压后双击 `DSH Desk.exe` 即可运行，**无需安装 Node.js** |
 
 **SHA-256 校验**（与 release 中的 `*.sha256` 文件一致，防止下载损坏/被篡改）：
 
 ```powershell
-Get-FileHash .\DSH-Desk-v0.1.2-win32-x64.zip -Algorithm SHA256
+Get-FileHash .\DSH-Desk-v0.1.3-win32-x64.zip -Algorithm SHA256
 ```
 
-v0.1.2 校验值：`ea1bb94a8dc027ed4f625da8058d770e5ceb6b7b9ae5d5550c12ecf24bb0a4ce`
+v0.1.3 校验值：`707fcf3e3c299b36b527d9b40ced3f3144da23237ca0cdf922d1540426ba0e4b`
 
 ## 功能
 
