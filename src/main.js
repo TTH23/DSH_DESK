@@ -124,6 +124,12 @@ ipcMain.on('dsh-desk:test-notification', () => {
   notify('测试通知', '如果看到这条，通知功能正常');
 });
 
+// 窗口标题：侧边栏隐藏时由页面上报当前会话名（无则恢复 "DSH Desk"）
+ipcMain.on('dsh-desk:title', (event, text) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) win.setTitle(text || 'DSH Desk');
+});
+
 // ---------- 系统通知 ----------
 let notificationLogPath = null;
 
@@ -370,10 +376,7 @@ function updateStatus() {
     }
     trayCtl.refresh();
   }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    // 窗口标题保持简洁；详细状态在托盘提示与菜单中
-    mainWindow.setTitle('DSH Desk');
-  }
+  // 窗口标题由页面上报（侧边栏隐藏时显示会话名），此处不再强改
 }
 
 // 把 DSH 启动进度事件转发给所有窗口的加载页（loading.html 通过 preload 接收）

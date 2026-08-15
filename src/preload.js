@@ -510,9 +510,37 @@ function initPicker() {
     checkPageReady();
     checkContextChanged();
     checkTaskState();
+    sendTitleIfNeeded(); // 侧边栏隐藏时窗口标题显示当前会话名
     applyTokenOverrides(currentColor); // 防止深浅主题切换/重渲染时被重置
     positionPalette();
   }, 1200);
+}
+
+// ---------- 窗口标题：侧边栏隐藏时显示当前会话名 ----------
+let lastSentTitle = null;
+
+// 侧边栏是否隐藏（收起/窄栏）：设置键向上找高度≈视口的工作区根，宽度很窄视为隐藏
+function sidebarHidden() {
+  const btn = findSettingsButton();
+  if (!btn) return true; // 找不到设置键 → 视为无侧边栏
+  let node = btn.parentElement;
+  let rootWidth = null;
+  while (node && node !== document.body) {
+    const r = node.getBoundingClientRect();
+    if (r.height > window.innerHeight * 0.8 && r.width > 0) rootWidth = r.width;
+    node = node.parentElement;
+  }
+  return rootWidth === null || rootWidth < 80;
+}
+
+function sendTitleIfNeeded() {
+  if (location.protocol !== 'http:') return;
+  const { sesKey } = detectContext();
+  const title = sidebarHidden() && sesKey ? `DSH Desk · ${sesKey}` : 'DSH Desk';
+  if (title !== lastSentTitle) {
+    lastSentTitle = title;
+    ipcRenderer.send('dsh-desk:title', title);
+  }
 }
 
 // 上下文（工作区/会话）变化 → 按新模式重算颜色（即时监听与轮询共用）
