@@ -627,17 +627,39 @@ const QUEUE_SEL =
   '[aria-label*="排队消息"], [aria-label*="queued message"], [aria-label*="插话发送"], ' +
   '[aria-label*="Steer"], textarea[placeholder*="排队消息"], textarea[placeholder*="queued"]';
 let wasTaskRunning = false;
+let taskTrackSession = ''; // 正在跟踪的会话（切换会话时重置，避免误报）
+let idleTicks = 0; // 空闲持续确认次数（连续 2 次才发，防 DOM 切换竞态）
 
 function hasQueuedMessages() {
   return Boolean(document.querySelector(QUEUE_SEL));
 }
 
 function checkTaskState() {
+  const { sesKey } = detectContext();
   const running = Boolean(document.querySelector(STOP_BTN_SEL));
-  if (wasTaskRunning && !running && !hasQueuedMessages()) {
-    ipcRenderer.send('dsh-desk:task-complete');
+  // 会话切换：重置跟踪但记录新会话的当前运行状态（避免误报，也不丢运行中状态）
+  if (sesKey !== taskTrackSession) {
+    taskTrackSession = sesKey;
+    wasTaskRunning = running;
+    idleTicks = 0;
+    return;
   }
-  wasTaskRunning = running;
+  if (running) {
+    wasTaskRunning = true;
+    idleTicks = 0;
+    return;
+  }
+  // 当前会话内空闲：先确认两次（同一会话、无排队）才发"任务完成"
+  if (wasTaskRunning) {
+    idleTicks++;
+    if (idleTicks >= 2 && !hasQueuedMessages()) {
+      ipcRenderer.send('dsh-desk:task-complete');
+      wasTaskRunning = false;
+      idleTicks = 0;
+    }
+  } else {
+    idleTicks = 0;
+  }
 }
 
 function onDomReady() {
