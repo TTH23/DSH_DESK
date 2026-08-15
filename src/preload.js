@@ -15,7 +15,6 @@ contextBridge.exposeInMainWorld('dshDesk', {
 });
 
 // ---------- 窗口配色 ----------
-const PRESETS = ['#4da3ff', '#34d399', '#22d3ee', '#a78bfa', '#f472b6', '#fb923c', '#f87171', '#94a3b8'];
 const BTN_SIZE = 40;
 let currentColor = null; // '#rrggbb' 或 null
 let winId = null;
@@ -132,41 +131,31 @@ function buildPalette() {
   root.id = 'dsh-desk-palette';
   root.style.cssText =
     'position:fixed;z-index:2147483647;background:#10141c;' +
-    'border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px;' +
-    'box-shadow:0 8px 32px rgba(0,0,0,.5);display:none;width:220px;' +
+    'border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:10px 12px;' +
+    'box-shadow:0 8px 32px rgba(0,0,0,.5);display:none;width:200px;' +
     'font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:#d7e3f4;';
+  // 标题行：窗口名（左）+ 清除按钮（右），节省高度
+  const titleRow = document.createElement('div');
+  titleRow.style.cssText =
+    'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
   const title = document.createElement('div');
-  title.style.cssText = 'font-size:12px;color:#9fb0c9;margin-bottom:10px;';
+  title.style.cssText = 'font-size:12px;color:#9fb0c9;';
   title.textContent = `窗口 ${winId ?? ''} 配色`;
-  const grid = document.createElement('div');
-  grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;';
-  for (const c of PRESETS) {
-    const sw = document.createElement('div');
-    sw.style.cssText =
-      `height:28px;border-radius:8px;background:${c};cursor:pointer;` +
-      'border:2px solid rgba(255,255,255,.08);';
-    sw.dataset.color = c;
-    sw.title = c;
-    sw.addEventListener('click', () => pick(c));
-    grid.appendChild(sw);
-  }
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:8px;align-items:center;';
-  const custom = document.createElement('input');
-  custom.type = 'color';
-  custom.style.cssText = 'flex:1;height:28px;border:none;background:none;cursor:pointer;';
-  custom.addEventListener('input', () => pick(custom.value));
   const clear = document.createElement('button');
   clear.textContent = '清除';
   clear.style.cssText =
-    'padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.2);' +
+    'padding:2px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.2);' +
     'background:transparent;color:#9fb0c9;cursor:pointer;font-size:12px;';
   clear.addEventListener('click', () => pick(null));
-  row.appendChild(custom);
-  row.appendChild(clear);
-  root.appendChild(title);
-  root.appendChild(grid);
-  root.appendChild(row);
+  titleRow.appendChild(title);
+  titleRow.appendChild(clear);
+  // 自定义颜色（整行）
+  const custom = document.createElement('input');
+  custom.type = 'color';
+  custom.style.cssText = 'width:100%;height:30px;border:none;background:none;cursor:pointer;padding:0;';
+  custom.addEventListener('input', () => pick(custom.value));
+  root.appendChild(titleRow);
+  root.appendChild(custom);
   return root;
 }
 
@@ -199,6 +188,15 @@ function initPicker() {
     if (palette) {
       palette.style.display = palette.style.display === 'none' ? 'block' : 'none';
       positionPalette(); // 打开时重新对齐
+    }
+  });
+  // 点击面板与按钮之外任意处 → 关闭配色菜单
+  document.addEventListener('click', (e) => {
+    const palette = document.getElementById('dsh-desk-palette');
+    const b = document.getElementById('dsh-desk-palette-btn');
+    if (!palette || !b || palette.style.display === 'none') return;
+    if (!palette.contains(e.target) && !b.contains(e.target)) {
+      palette.style.display = 'none';
     }
   });
   document.documentElement.appendChild(btn);
