@@ -130,10 +130,17 @@ function broadcastThemeState() {
   }
 }
 
-// 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知（附会话名）
+// 通知文案工具：截断为单行
+function truncateText(s, max) {
+  s = String(s == null ? '' : s);
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+// 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知
+// 第二行显示对话名开头（截断为单行）
 ipcMain.on('dsh-desk:task-complete', (_event, data) => {
   const session = data && typeof data.session === 'string' && data.session.trim() ? data.session.trim() : '';
-  notifyIf('task', '任务完成', session ? `「${session}」已完成` : 'DeepSeek Harness 已完成任务');
+  notifyIf('task', '任务完成', session ? truncateText(session, 40) : 'DeepSeek Harness 已完成任务');
 });
 
 // 托盘「通知 → 测试通知」：验证系统通知是否正常落地
@@ -619,7 +626,11 @@ async function init() {
       updateStatus();
       sendToWindow('failed', { code, message });
       if (isQuitting) return;
-      notifyIf('error', 'DSH 服务出错', code === 'NO_LAUNCHER' ? '未找到 DSH 启动器' : message.split('\n')[0]);
+      notifyIf(
+        'error',
+        'DSH 服务出错',
+        truncateText(code === 'NO_LAUNCHER' ? '未找到 DSH 启动器' : message.split('\n')[0], 90)
+      );
       if (code === 'NO_LAUNCHER') {
         handleNoLauncher(message);
         return;
