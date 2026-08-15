@@ -44,20 +44,25 @@ let stateLoaded = false;
 
 // 会话层级 nav 里当前会话（disabled 的 crumb）文本 = 当前会话标题
 function detectContext() {
-  let wsKey = '';
-  const wsBtn = document.querySelector(WS_SELECTOR);
-  if (wsBtn) {
-    const label = (wsBtn.textContent || '').trim();
-    if (label && !WS_PLACEHOLDERS.includes(label)) wsKey = label;
-  }
-  if (wsKey) lastWorkspaceKey = wsKey;
   let sesKey = '';
   const nav = document.querySelector(SESS_NAV_SELECTOR);
   if (nav) {
     const cur = nav.querySelector('button[disabled]');
     if (cur) sesKey = (cur.textContent || '').trim();
   }
-  return { wsKey: wsKey || lastWorkspaceKey, sesKey };
+  let wsKey = '';
+  // ① hero 页的工作区芯片
+  const wsBtn = document.querySelector(WS_SELECTOR);
+  if (wsBtn) {
+    const label = (wsBtn.textContent || '').trim();
+    if (label && !WS_PLACEHOLDERS.includes(label)) wsKey = label;
+  }
+  // ② 会话内：侧边栏工作区树中，包含当前会话标题的那个工作区
+  if (!wsKey) wsKey = detectWorkspaceInSidebar(sesKey) || '';
+  // ③ 回退：最近一次可见的工作区
+  if (!wsKey) wsKey = lastWorkspaceKey;
+  if (wsKey) lastWorkspaceKey = wsKey;
+  return { wsKey, sesKey };
 }
 
 // 当前应显示的颜色：按模式 + 上下文解析（无匹配 → 默认）
@@ -68,11 +73,20 @@ function resolveColor() {
   return windowColor;
 }
 
-function contextLabel() {
-  const { wsKey, sesKey } = detectContext();
-  if (themeMode === 'workspace') return wsKey ? `工作区 ${wsKey} 配色` : '工作区配色（未检测到）';
-  if (themeMode === 'session') return sesKey ? `会话 ${sesKey} 配色` : '会话配色（未检测到）';
-  return `${winLabel} 配色`;
+// 侧边栏工作区树定位：每个工作区行带 "工作区“{name}”的操作" 按钮；
+// 包含当前会话标题（sessionTitle）的树节点所在的工作区行 = 当前工作区
+function detectWorkspaceInSidebar(sessionTitle) {
+  const ACTION_LABEL_RE = /工作区["“「]([^"”」]+)["”」]|Workspace actions for (.+)/;
+  const rows = Array.from(document.querySelectorAll('[role="treeitem"]')).filter((el) =>
+    el.querySelector('button[aria-label*="的操作"], button[aria-label*="Workspace actions"]')
+  );
+  for (const row of rows) {
+    const btn = row.querySelector('button[aria-label*="的操作"], button[aria-label*="Workspace actions"]');
+    const m = ACTION_LABEL_RE.exec(btn.getAttribute('aria-label') || '');
+    const name = m ? (m[1] || m[2] || '').trim() : '';
+    if (name && sessionTitle && row.textContent.includes(sessionTitle)) return name;
+  }
+  return null;
 }
 
 // 查找设置触发键：侧边栏底部的齿轮按钮（aria-haspopup=dialog，含 "设置"/"Settings" 文案或为最左侧的 dialog 触发键）
@@ -289,8 +303,6 @@ function setMode(mode) {
 
 // ---------- 面板 UI ----------
 function updatePaletteUI() {
-  const label = document.getElementById('dsh-desk-theme-label');
-  if (label) label.textContent = contextLabel();
   const wsDot = document.getElementById('dsh-desk-mode-ws');
   const sesDot = document.getElementById('dsh-desk-mode-ses');
   if (wsDot) {
@@ -309,34 +321,18 @@ function buildPalette() {
   root.style.cssText =
     'position:fixed;z-index:2147483647;background:#10141c;' +
     'border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:10px 12px;' +
-    'box-shadow:0 8px 32px rgba(0,0,0,.5);display:none;width:216px;' +
+    'box-shadow:0 8px 32px rgba(0,0,0,.5);display:none;width:232px;' +
     'font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:#d7e3f4;';
 
-  // 标题行：跟随目标（左）+ 清除（右）
-  const titleRow = document.createElement('div');
-  titleRow.style.cssText =
-    'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
-  const title = document.createElement('div');
-  title.id = 'dsh-desk-theme-label';
-  title.style.cssText = 'font-size:12px;color:#9fb0c9;max-width:150px;overflow:hidden;' +
-    'text-overflow:ellipsis;white-space:nowrap;';
-  const clear = document.createElement('button');
-  clear.textContent = '清除';
-  clear.style.cssText =
-    'padding:2px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.2);' +
-    'background:transparent;color:#9fb0c9;cursor:pointer;font-size:12px;flex:none;';
-  clear.addEventListener('click', () => pick(null));
-  titleRow.appendChild(title);
-  titleRow.appendChild(clear);
-
-  // 互斥跟随开关
+  // 互斥跟随开关 + 清除（同一行，清除靠右）
   const modeRow = document.createElement('div');
-  modeRow.style.cssText = 'display:flex;flex-direction:column;gap:2px;margin-bottom:8px;';
+  modeRow.style.cssText =
+    'display:flex;align-items:center;gap:2px;margin-bottom:8px;font-size:12px;';
   const mkMode = (id, text, mode) => {
     const row = document.createElement('div');
     row.style.cssText =
-      'display:flex;align-items:center;gap:6px;cursor:pointer;padding:3px 4px;' +
-      'border-radius:6px;font-size:12px;color:#c3d0e4;user-select:none;';
+      'display:flex;align-items:center;gap:4px;cursor:pointer;padding:3px 5px;' +
+      'border-radius:6px;color:#c3d0e4;user-select:none;white-space:nowrap;';
     row.addEventListener('mouseenter', () => {
       row.style.background = 'rgba(255,255,255,.06)';
     });
@@ -345,7 +341,7 @@ function buildPalette() {
     });
     const dot = document.createElement('span');
     dot.id = id;
-    dot.style.cssText = 'font-size:12px;width:12px;color:#5c6b84;';
+    dot.style.cssText = 'font-size:11px;width:12px;color:#5c6b84;';
     const label = document.createElement('span');
     label.textContent = text;
     row.appendChild(dot);
@@ -356,8 +352,15 @@ function buildPalette() {
     });
     return row;
   };
+  const clear = document.createElement('button');
+  clear.textContent = '清除';
+  clear.style.cssText =
+    'margin-left:auto;padding:2px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.2);' +
+    'background:transparent;color:#9fb0c9;cursor:pointer;font-size:11px;flex:none;';
+  clear.addEventListener('click', () => pick(null));
   modeRow.appendChild(mkMode('dsh-desk-mode-ws', '颜色随工作区', 'workspace'));
   modeRow.appendChild(mkMode('dsh-desk-mode-ses', '颜色随会话', 'session'));
+  modeRow.appendChild(clear);
 
   // 预设色板网格
   const grid = document.createElement('div');
@@ -373,7 +376,6 @@ function buildPalette() {
     grid.appendChild(sw);
   }
 
-  root.appendChild(titleRow);
   root.appendChild(modeRow);
   root.appendChild(grid);
   return root;
