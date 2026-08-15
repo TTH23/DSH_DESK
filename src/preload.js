@@ -564,27 +564,13 @@ function initPicker() {
   }, 1200);
 }
 
-// ---------- 窗口标题：侧边栏隐藏时显示当前会话名 ----------
+// ---------- 窗口标题：始终跟随当前会话名 ----------
 let lastSentTitle = null;
-
-// 侧边栏是否隐藏（收起/窄栏）：设置键向上找高度≈视口的工作区根，宽度很窄视为隐藏
-function sidebarHidden() {
-  const btn = findSettingsButton();
-  if (!btn) return true; // 找不到设置键 → 视为无侧边栏
-  let node = btn.parentElement;
-  let rootWidth = null;
-  while (node && node !== document.body) {
-    const r = node.getBoundingClientRect();
-    if (r.height > window.innerHeight * 0.8 && r.width > 0) rootWidth = r.width;
-    node = node.parentElement;
-  }
-  return rootWidth === null || rootWidth < 80;
-}
 
 function sendTitleIfNeeded() {
   if (location.protocol !== 'http:') return;
   const { sesKey } = detectContext();
-  const title = sidebarHidden() && sesKey ? `DSH Desk · ${sesKey}` : 'DSH Desk';
+  const title = sesKey ? `DSH Desk · ${sesKey}` : 'DSH Desk';
   if (title !== lastSentTitle) {
     lastSentTitle = title;
     ipcRenderer.send('dsh-desk:title', title);
@@ -601,6 +587,7 @@ function checkContextChanged() {
     prevSesKey = sesKey;
     applyTheme(resolveColor());
     updatePaletteUI();
+    sendTitleIfNeeded(); // 会话切换 → 标题立即跟随
     // 侧边栏工作区树可能比面包屑晚一步更新：400ms 后复查一次
     if (!followUpScheduled) {
       followUpScheduled = true;
