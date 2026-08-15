@@ -61,25 +61,32 @@ function findComposer() {
   return { sendBtn, textarea };
 }
 
-// 把调色板按钮（及展开面板）锚定到设置键正上方（水平居中）；找不到设置键时
-// 回退到发送键/输入框上方，最后回退到右下角偏上位置
+// 把调色板按钮（及展开面板）放在设置键正上方：水平贴住屏幕左侧边框（侧边栏内，
+// 不悬浮到内容区中央）；找不到设置键时回退到发送键/输入框上方，最后回退到
+// 右下角偏上位置
 function positionPalette() {
   const btn = document.getElementById('dsh-desk-palette-btn');
   const panel = document.getElementById('dsh-desk-palette');
   if (!btn) return;
-  const anchor = findSettingsButton() || findComposer().sendBtn || findComposer().textarea;
+  const settingsBtn = findSettingsButton();
+  const anchor = settingsBtn || findComposer().sendBtn || findComposer().textarea;
   if (anchor) {
     const r = anchor.getBoundingClientRect();
     if (r.width > 0 && r.height > 0 && r.top > 0) {
       const gap = 10;
-      const left = Math.max(4, r.left + r.width / 2 - BTN_SIZE / 2);
       const bottom = Math.max(4, window.innerHeight - r.top + gap);
-      btn.style.left = left + 'px';
+      if (settingsBtn) {
+        // 设置键锚定：贴住左侧边框（侧边栏内）
+        btn.style.left = '6px';
+      } else {
+        // 发送键/输入框锚定：水平居中于锚点上方
+        btn.style.left = Math.max(4, r.left + r.width / 2 - BTN_SIZE / 2) + 'px';
+      }
       btn.style.right = 'auto';
       btn.style.bottom = bottom + 'px';
       btn.classList.add('dsh-desk-anchored');
       if (panel) {
-        panel.style.left = left + 'px';
+        panel.style.left = btn.style.left;
         panel.style.right = 'auto';
         panel.style.bottom = bottom + BTN_SIZE + 10 + 'px';
       }
