@@ -448,22 +448,60 @@ function initPicker() {
   document.documentElement.appendChild(buildPalette());
   initThemeState();
 
-  // 跟随布局变化与上下文变化
+  // 上下文变化即时检测：MutationObserver 监听会话面包屑/工作区芯片的 DOM 变化，
+  // 切换会话/工作区时立即换色（不再等 1.2s 轮询）；消息流式输出不影响它们，零负担
+  const ctxTimer = { id: null };
+  const scheduleContextCheck = () => {
+    if (ctxTimer.id) return;
+    ctxTimer.id = setTimeout(() => {
+      ctxTimer.id = null;
+      checkContextChanged();
+    }, 60);
+  };
+  const ctxSelector = SESS_NAV_SELECTOR + ', ' + WS_SELECTOR;
+  try {
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        const el = m.target && m.target.nodeType === 1 ? m.target : m.target && m.target.parentElement;
+        if (el && el.closest && el.closest(ctxSelector)) {
+          scheduleContextCheck();
+          return;
+        }
+        if (m.addedNodes) {
+          for (const n of m.addedNodes) {
+            if (n.nodeType === 1 && n.matches && n.matches(ctxSelector)) {
+              scheduleContextCheck();
+              return;
+            }
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  } catch {
+    /* 不支持 MutationObserver 时退回轮询 */
+  }
+
+  // 跟随布局变化与上下文变化（轮询作兜底：防重渲染/路由切换漏检）
   window.addEventListener('scroll', positionPalette, true);
   window.addEventListener('resize', positionPalette);
   setInterval(() => {
     checkPageReady();
-    // 上下文（工作区/会话）变化 → 按新模式重算颜色
-    const { wsKey, sesKey } = detectContext();
-    if (wsKey !== prevWsKey || sesKey !== prevSesKey) {
-      prevWsKey = wsKey;
-      prevSesKey = sesKey;
-      applyTheme(resolveColor());
-      updatePaletteUI();
-    }
+    checkContextChanged();
     applyTokenOverrides(currentColor); // 防止深浅主题切换/重渲染时被重置
     positionPalette();
   }, 1200);
+}
+
+// 上下文（工作区/会话）变化 → 按新模式重算颜色（即时监听与轮询共用）
+function checkContextChanged() {
+  const { wsKey, sesKey } = detectContext();
+  if (wsKey !== prevWsKey || sesKey !== prevSesKey) {
+    prevWsKey = wsKey;
+    prevSesKey = sesKey;
+    applyTheme(resolveColor());
+    updatePaletteUI();
+  }
 }
 
 function onDomReady() {
