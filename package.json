@@ -1,7 +1,7 @@
 {
   "name": "dsh-desk",
   "productName": "DSH Desk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DeepSeek Harness 桌面托盘程序：内嵌启动 dsh web、无命令行窗口、最小化到系统托盘",
   "main": "src/main.js",
   "private": true,
