@@ -45,6 +45,12 @@ function createTray(opts) {
   tray.setToolTip('DSH Desk');
 
   const fmt = (v) => (v === null || v === undefined ? '--' : v.toFixed(2));
+  // 限制菜单项字符长度，保证菜单宽度合理
+  const MAX_LEN = 44;
+  const truncate = (s) => {
+    s = String(s == null ? '' : s);
+    return s.length > MAX_LEN ? s.slice(0, MAX_LEN - 1) + '…' : s;
+  };
 
   function usageMenu() {
     if (typeof opts.getUsage !== 'function') return [];
@@ -77,13 +83,29 @@ function createTray(opts) {
     ];
   }
 
+  // 用量数据行（主菜单直接显示；错误信息可能很长，需截断）
+  function usageLine() {
+    if (typeof opts.getUsage !== 'function') return null;
+    const u = opts.getUsage();
+    let text;
+    if (!u.keyConfigured) text = '用量：未配置 API Key';
+    else if (u.error) text = `用量：查询失败（${u.error}）`;
+    else text = `用量：余额 ¥${fmt(u.balance)} · 本次消费 ¥${fmt(u.spent)}`;
+    return { label: truncate(text), enabled: false };
+  }
+
   function buildMenu() {
     const { state, url } = opts.getState();
     const statusText = STATUS_TEXT[state] || state;
     const running = state === 'running';
     const stopped = state === 'stopped' || state === 'failed';
+    const infoItems = [
+      { label: truncate(`${STATE_ICON[state] || '○'} ${statusText}${url ? ' · ' + url : ''}`), enabled: false },
+    ];
+    const ul = usageLine();
+    if (ul) infoItems.push(ul);
     return Menu.buildFromTemplate([
-      { label: `${STATE_ICON[state] || '○'} ${statusText}${url ? ' · ' + url : ''}`, enabled: false },
+      ...infoItems,
       { type: 'separator' },
       { label: '显示 / 隐藏主界面', click: opts.onToggleWindow },
       { label: '新建窗口', enabled: Boolean(opts.onNewWindow), click: opts.onNewWindow },
@@ -92,7 +114,7 @@ function createTray(opts) {
       {
         label: '服务',
         submenu: [
-          { label: `状态：${statusText}`, enabled: false },
+          { label: truncate(`状态：${statusText}`), enabled: false },
           { type: 'separator' },
           { label: '启动 DSH 服务', enabled: stopped, click: opts.onStart },
           { label: '停止 DSH 服务', enabled: running, click: opts.onStop },
