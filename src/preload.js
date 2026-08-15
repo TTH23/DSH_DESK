@@ -509,6 +509,7 @@ function initPicker() {
   setInterval(() => {
     checkPageReady();
     checkContextChanged();
+    checkTaskState();
     applyTokenOverrides(currentColor); // 防止深浅主题切换/重渲染时被重置
     positionPalette();
   }, 1200);
@@ -532,6 +533,26 @@ function checkContextChanged() {
       }, 400);
     }
   }
+}
+
+// ---------- 任务完成通知检测 ----------
+// 运行中 = 存在"停止生成"按钮；从运行→空闲且无排队/插话队列等待 → 任务完成
+const STOP_BTN_SEL = 'button[aria-label="停止生成"], button[aria-label="Stop generating"]';
+const QUEUE_SEL =
+  '[aria-label*="排队消息"], [aria-label*="queued message"], [aria-label*="插话发送"], ' +
+  '[aria-label*="Steer"], textarea[placeholder*="排队消息"], textarea[placeholder*="queued"]';
+let wasTaskRunning = false;
+
+function hasQueuedMessages() {
+  return Boolean(document.querySelector(QUEUE_SEL));
+}
+
+function checkTaskState() {
+  const running = Boolean(document.querySelector(STOP_BTN_SEL));
+  if (wasTaskRunning && !running && !hasQueuedMessages()) {
+    ipcRenderer.send('dsh-desk:task-complete');
+  }
+  wasTaskRunning = running;
 }
 
 function onDomReady() {

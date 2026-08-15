@@ -199,8 +199,55 @@ const png48 = encodePNG(48, 48, downscale(buf, SIZE, 48));
 const png32 = encodePNG(32, 32, downscale(buf, SIZE, 32));
 const png16 = encodePNG(16, 16, downscale(buf, SIZE, 16));
 
+// ---------- 托盘状态角标变体（32x32） ----------
+function blendPixel(b, size, x, y, r, g, bl, a) {
+  if (x < 0 || y < 0 || x >= size || y >= size || a <= 0) return;
+  const i = (y * size + x) * 4;
+  const sa = a / 255;
+  const da = b[i + 3] / 255;
+  const oa = sa + da * (1 - sa);
+  if (oa <= 0) return;
+  b[i] = Math.round((r * sa + b[i] * da * (1 - sa)) / oa);
+  b[i + 1] = Math.round((g * sa + b[i + 1] * da * (1 - sa)) / oa);
+  b[i + 2] = Math.round((bl * sa + b[i + 2] * da * (1 - sa)) / oa);
+  b[i + 3] = Math.round(oa * 255);
+}
+
+function badgeCircle(b, size, color, r = 8) {
+  const cx = size - r - 1;
+  const cy = size - r - 1;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy) - r;
+      const a = Math.max(0, Math.min(1, 0.5 - d));
+      if (a > 0) blendPixel(b, size, x, y, color[0], color[1], color[2], Math.round(a * 255));
+    }
+  }
+}
+
+function grayify(b, size) {
+  for (let i = 0; i < b.length; i += 4) {
+    if (b[i + 3] === 0) continue;
+    const g = Math.round(b[i] * 0.299 + b[i + 1] * 0.587 + b[i + 2] * 0.114);
+    b[i] = Math.round(g * 0.85);
+    b[i + 1] = Math.round(g * 0.85);
+    b[i + 2] = Math.round(g * 0.85);
+  }
+}
+
+const trayBase = downscale(buf, SIZE, 32);
+const trayOnline = Buffer.from(trayBase);
+const trayError = Buffer.from(trayBase);
+const trayOffline = Buffer.from(trayBase);
+badgeCircle(trayOnline, 32, [0x22, 0xc5, 0x5e]); // 绿点：在线
+badgeCircle(trayError, 32, [0xef, 0x44, 0x44]); // 红点：出错
+grayify(trayOffline, 32); // 灰化：服务不在线/端口被占用
+
 fs.writeFileSync(path.join(ASSETS, "icon.png"), png256);
 fs.writeFileSync(path.join(ASSETS, "tray.png"), png32);
+fs.writeFileSync(path.join(ASSETS, "tray-online.png"), encodePNG(32, 32, trayOnline));
+fs.writeFileSync(path.join(ASSETS, "tray-error.png"), encodePNG(32, 32, trayError));
+fs.writeFileSync(path.join(ASSETS, "tray-offline.png"), encodePNG(32, 32, trayOffline));
 fs.writeFileSync(
   path.join(ASSETS, "icon.ico"),
   encodeICO([

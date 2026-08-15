@@ -1,26 +1,37 @@
 'use strict';
-// 系统托盘：图标 + 右键菜单（支持状态动态刷新）
+// 系统托盘：图标（状态角标由主进程切换）+ 二级菜单
+// 主菜单只留常用操作；服务/用量/通知收进二级菜单，信息不再分散
 const { Tray, Menu, nativeImage } = require('electron');
 
 const STATUS_TEXT = {
   running: '运行中',
-  attached: '已附着（外部实例）',
+  attached: '已附着',
   starting: '启动中…',
   stopped: '已停止',
   failed: '启动失败',
 };
 
+const STATE_ICON = {
+  running: '●',
+  attached: '●',
+  starting: '…',
+  stopped: '○',
+  failed: '✕',
+};
+
 /**
  * @param {object} opts
- * @param {string} opts.iconPath 托盘图标（32x32 PNG）
+ * @param {string} opts.iconPath 托盘图标（32x32 PNG，基础态）
  * @param {() => { state: string, url: string|null }} opts.getState
  * @param {() => { keyConfigured: boolean, balance: number|null, spent: number|null, error: string|null }} [opts.getUsage]
  * @param {() => void} [opts.onRefreshUsage]
  * @param {() => void} [opts.onResetUsage]
+ * @param {() => { task: boolean, startup: boolean, error: boolean }} [opts.getNotifications]
+ * @param {(type: string, enabled: boolean) => void} [opts.onToggleNotification]
  * @param {() => boolean} opts.isAutoStart
  * @param {(enabled: boolean) => void} opts.onToggleAutoStart
  * @param {() => void} opts.onToggleWindow
- * @param {() => void} [opts.onNewWindow] 新建窗口（多任务并行）
+ * @param {() => void} [opts.onNewWindow]
  * @param {() => void} opts.onOpenBrowser
  * @param {() => void} opts.onStart
  * @param {() => void} opts.onStop
@@ -35,21 +46,34 @@ function createTray(opts) {
 
   const fmt = (v) => (v === null || v === undefined ? '--' : v.toFixed(2));
 
-  function usageItems() {
+  function usageMenu() {
     if (typeof opts.getUsage !== 'function') return [];
     const u = opts.getUsage();
     let label;
-    if (!u.keyConfigured) {
-      label = '用量：未配置 API Key';
-    } else if (u.error) {
-      label = '用量：查询失败（' + u.error + '）';
-    } else {
-      label = `用量：余额 ¥${fmt(u.balance)} · 本次消费 ¥${fmt(u.spent)}`;
-    }
+    if (!u.keyConfigured) label = '未配置 API Key';
+    else if (u.error) label = `查询失败（${u.error}）`;
+    else label = `余额 ¥${fmt(u.balance)} · 本次消费 ¥${fmt(u.spent)}`;
     return [
       { label, enabled: false },
+      { type: 'separator' },
       { label: '刷新用量', click: opts.onRefreshUsage },
       { label: '清零小计', click: opts.onResetUsage },
+    ];
+  }
+
+  function notificationMenu() {
+    if (typeof opts.getNotifications !== 'function') return [];
+    const n = opts.getNotifications() || {};
+    const mk = (type, label) => ({
+      label,
+      type: 'checkbox',
+      checked: Boolean(n[type]),
+      click: (item) => opts.onToggleNotification(type, item.checked),
+    });
+    return [
+      mk('task', '任务完成通知'),
+      mk('startup', '启动成功通知'),
+      mk('error', '出错通知'),
     ];
   }
 
@@ -59,16 +83,24 @@ function createTray(opts) {
     const running = state === 'running';
     const stopped = state === 'stopped' || state === 'failed';
     return Menu.buildFromTemplate([
-      { label: `状态：${statusText}${url ? ' · ' + url : ''}`, enabled: false },
-      ...usageItems(),
+      { label: `${STATE_ICON[state] || '○'} ${statusText}${url ? ' · ' + url : ''}`, enabled: false },
       { type: 'separator' },
       { label: '显示 / 隐藏主界面', click: opts.onToggleWindow },
       { label: '新建窗口', enabled: Boolean(opts.onNewWindow), click: opts.onNewWindow },
       { label: '在浏览器中打开', enabled: Boolean(url), click: opts.onOpenBrowser },
       { type: 'separator' },
-      { label: '启动 DSH 服务', enabled: stopped, click: opts.onStart },
-      { label: '停止 DSH 服务', enabled: running, click: opts.onStop },
-      { label: '重启 DSH 服务', enabled: running, click: opts.onRestart },
+      {
+        label: '服务',
+        submenu: [
+          { label: `状态：${statusText}`, enabled: false },
+          { type: 'separator' },
+          { label: '启动 DSH 服务', enabled: stopped, click: opts.onStart },
+          { label: '停止 DSH 服务', enabled: running, click: opts.onStop },
+          { label: '重启 DSH 服务', enabled: running, click: opts.onRestart },
+        ],
+      },
+      { label: '用量', submenu: usageMenu() },
+      { label: '通知', submenu: notificationMenu() },
       { type: 'separator' },
       {
         label: '开机自动启动',
@@ -76,7 +108,7 @@ function createTray(opts) {
         checked: Boolean(opts.isAutoStart()),
         click: (item) => opts.onToggleAutoStart(item.checked),
       },
-      { label: '查看日志目录', click: opts.onOpenLogs },
+      { label: '查看日志', click: opts.onOpenLogs },
       { type: 'separator' },
       { label: '退出 DSH Desk', click: opts.onQuit },
     ]);

@@ -1,7 +1,7 @@
 'use strict';
 // DSH Desk —— DeepSeek Harness 桌面托盘程序
 // 主进程：管理窗口（支持多窗口）、托盘、开机自启，以及 DSH 服务进程的生命周期
-const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain, Notification, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -13,6 +13,9 @@ const { createTray } = require('./tray');
 const APP_DIR = path.join(__dirname, '..');
 const ICON_PATH = path.join(APP_DIR, 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(APP_DIR, 'assets', 'tray.png');
+const TRAY_ONLINE_PATH = path.join(APP_DIR, 'assets', 'tray-online.png');
+const TRAY_ERROR_PATH = path.join(APP_DIR, 'assets', 'tray-error.png');
+const TRAY_OFFLINE_PATH = path.join(APP_DIR, 'assets', 'tray-offline.png');
 const LOADING_HTML = path.join(__dirname, 'loading.html');
 const PRELOAD_JS = path.join(__dirname, 'preload.js');
 
@@ -31,8 +34,9 @@ let autoStartEnabled = false;
 const windows = new Set(); // 所有窗口（含主窗口），用于多窗口管理
 
 // ---------- 窗口配色（每窗口独立主题色，持久化到 userData/theme.json） ----------
-let themeStore = { mode: 'window', workspaceColors: {}, sessionColors: {} };
+let themeStore = { mode: 'window', workspaceColors: {}, sessionColors: {}, notifications: { task: true, startup: true, error: true } };
 // mode: 'window'（本窗口临时色，不持久化）| 'workspace'（按工作区记忆）| 'session'（按会话记忆）
+// notifications: 系统通知开关（任务完成 / 启动成功 / 出错）
 
 function themeFile() {
   return path.join(app.getPath('userData'), 'theme.json');
@@ -43,12 +47,18 @@ function loadThemeStore() {
     const parsed = JSON.parse(fs.readFileSync(themeFile(), 'utf8'));
     if (parsed && typeof parsed === 'object') {
       const mode = ['window', 'workspace', 'session'].includes(parsed.mode) ? parsed.mode : 'window';
+      const n = parsed.notifications && typeof parsed.notifications === 'object' ? parsed.notifications : {};
       themeStore = {
         mode,
         workspaceColors:
           parsed.workspaceColors && typeof parsed.workspaceColors === 'object' ? parsed.workspaceColors : {},
         sessionColors:
           parsed.sessionColors && typeof parsed.sessionColors === 'object' ? parsed.sessionColors : {},
+        notifications: {
+          task: n.task !== false,
+          startup: n.startup !== false,
+          error: n.error !== false,
+        },
       };
     }
   } catch {
@@ -103,6 +113,40 @@ ipcMain.on('dsh-desk:theme-mode', (_event, mode) => {
   themeStore.mode = mode;
   saveThemeStore();
 });
+
+// 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知
+ipcMain.on('dsh-desk:task-complete', () => {
+  notifyIf('task', '任务完成', 'DeepSeek Harness 已完成任务');
+});
+
+// ---------- 系统通知 ----------
+function notify(title, body) {
+  try {
+    if (!Notification.isSupported()) return;
+    new Notification({ title, body, icon: ICON_PATH, silent: false }).show();
+  } catch {
+    /* 通知失败不影响主功能 */
+  }
+}
+
+function notifyIf(type, title, body) {
+  const n = themeStore.notifications || {};
+  if (n[type] !== false) notify(title, body);
+}
+
+function setNotification(type, enabled) {
+  if (!['task', 'startup', 'error'].includes(type)) return;
+  themeStore.notifications[type] = Boolean(enabled);
+  saveThemeStore();
+}
+
+// ---------- 托盘状态图标（状态角标：在线绿 / 出错红 / 离线灰） ----------
+function trayIconForState(state) {
+  if (state === 'running' || state === 'attached') return TRAY_ONLINE_PATH;
+  if (state === 'failed') return TRAY_ERROR_PATH;
+  if (state === 'stopped') return TRAY_OFFLINE_PATH;
+  return TRAY_ICON_PATH; // starting / 其他 → 基础
+}
 
 // ---------- 开机自启（HKCU Run 键） ----------
 function autoStartCommand() {
@@ -286,7 +330,16 @@ function setupJumpList() {
 
 // ---------- 状态 ----------
 function updateStatus() {
-  if (trayCtl) trayCtl.refresh();
+  if (trayCtl) {
+    // 状态角标图标：在线绿 / 出错红 / 离线灰
+    const state = manager ? manager.state : 'stopped';
+    try {
+      trayCtl.tray.setImage(nativeImage.createFromPath(trayIconForState(state)));
+    } catch {
+      /* ignore */
+    }
+    trayCtl.refresh();
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     // 窗口标题保持简洁；详细状态在托盘提示与菜单中
     mainWindow.setTitle('DSH Desk');
@@ -410,6 +463,8 @@ function createTrayUI() {
     onResetUsage: () => {
       if (usage) usage.resetBaseline();
     },
+    getNotifications: () => themeStore.notifications,
+    onToggleNotification: setNotification,
     isAutoStart: () => autoStartEnabled,
     onToggleAutoStart: async (enabled) => {
       await setAutoStart(enabled);
@@ -488,6 +543,10 @@ async function init() {
     manager.on('ready', ({ url, attached }) => {
       updateStatus();
       sendToWindow('ready', { url, attached });
+      // 启动成功通知（自启模式不打扰）
+      if (!process.argv.includes('--autostart')) {
+        notifyIf('startup', 'DeepSeek Harness 已就绪', attached ? `已附着到 ${url}` : `服务已启动：${url}`);
+      }
       // 所有窗口（含最小化/不可见）都切到 DSH 界面
       for (const win of windows) {
         if (!win.isDestroyed()) navigateTo(win, url);
@@ -499,6 +558,7 @@ async function init() {
       updateStatus();
       sendToWindow('failed', { code, message });
       if (isQuitting) return;
+      notifyIf('error', 'DSH 服务出错', code === 'NO_LAUNCHER' ? '未找到 DSH 启动器' : message.split('\n')[0]);
       if (code === 'NO_LAUNCHER') {
         handleNoLauncher(message);
         return;
