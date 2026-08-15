@@ -76,21 +76,36 @@ function createTray(opts) {
       checked: Boolean(n[type]),
       click: (item) => opts.onToggleNotification(type, item.checked),
     });
-    return [
+    const items = [
       mk('task', '任务完成通知'),
       mk('startup', '启动成功通知'),
       mk('error', '出错通知'),
     ];
+    if (typeof opts.onTestNotification === 'function') {
+      items.push({ type: 'separator' });
+      items.push({ label: '测试通知', click: opts.onTestNotification });
+    }
+    return items;
   }
 
-  // 用量数据行（主菜单直接显示；错误信息可能很长，需截断）
+  // 状态行：IP 只保留端口，避免过长
+  function portOf(url) {
+    if (!url) return '';
+    try {
+      return new URL(url).port || url;
+    } catch {
+      return url;
+    }
+  }
+
+  // 用量数据行（主菜单直接显示；只留数字，尽量短）
   function usageLine() {
     if (typeof opts.getUsage !== 'function') return null;
     const u = opts.getUsage();
     let text;
-    if (!u.keyConfigured) text = '用量：未配置 API Key';
-    else if (u.error) text = `用量：查询失败（${u.error}）`;
-    else text = `用量：余额 ¥${fmt(u.balance)} · 本次消费 ¥${fmt(u.spent)}`;
+    if (!u.keyConfigured) text = '用量：未配置 Key';
+    else if (u.error) text = `用量失败：${u.error}`;
+    else text = `¥${fmt(u.balance)} · 消费 ¥${fmt(u.spent)}`;
     return { label: truncate(text), enabled: false };
   }
 
@@ -100,7 +115,7 @@ function createTray(opts) {
     const running = state === 'running';
     const stopped = state === 'stopped' || state === 'failed';
     const infoItems = [
-      { label: truncate(`${STATE_ICON[state] || '○'} ${statusText}${url ? ' · ' + url : ''}`), enabled: false },
+      { label: truncate(`${STATE_ICON[state] || '○'} ${statusText}${url ? ' · ' + portOf(url) : ''}`), enabled: false },
     ];
     const ul = usageLine();
     if (ul) infoItems.push(ul);
@@ -132,7 +147,7 @@ function createTray(opts) {
       },
       { label: '查看日志', click: opts.onOpenLogs },
       { type: 'separator' },
-      { label: '退出 DSH Desk', click: opts.onQuit },
+      { label: '退出', click: opts.onQuit },
     ]);
   }
 

@@ -119,19 +119,49 @@ ipcMain.on('dsh-desk:task-complete', () => {
   notifyIf('task', '任务完成', 'DeepSeek Harness 已完成任务');
 });
 
+// 托盘「通知 → 测试通知」：验证系统通知是否正常落地
+ipcMain.on('dsh-desk:test-notification', () => {
+  notify('测试通知', '如果看到这条，通知功能正常');
+});
+
 // ---------- 系统通知 ----------
+let notificationLogPath = null;
+
+function logNotify(line) {
+  if (!notificationLogPath) {
+    try {
+      notificationLogPath = path.join(app.getPath('userData'), 'logs', 'notify.log');
+      fs.mkdirSync(path.dirname(notificationLogPath), { recursive: true });
+    } catch {
+      return;
+    }
+  }
+  try {
+    fs.appendFileSync(notificationLogPath, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
 function notify(title, body) {
   try {
-    if (!Notification.isSupported()) return;
+    const supported = Notification.isSupported();
+    logNotify(`attempt: supported=${supported} title="${title}" body="${body}"`);
+    if (!supported) {
+      logNotify('skipped: Notification.isSupported() === false');
+      return;
+    }
     new Notification({ title, body, icon: ICON_PATH, silent: false }).show();
-  } catch {
-    /* 通知失败不影响主功能 */
+    logNotify('shown');
+  } catch (err) {
+    logNotify(`error: ${(err && err.message) || err}`);
   }
 }
 
 function notifyIf(type, title, body) {
   const n = themeStore.notifications || {};
   if (n[type] !== false) notify(title, body);
+  else logNotify(`skipped (${type} disabled): "${title}"`);
 }
 
 function setNotification(type, enabled) {
@@ -465,6 +495,9 @@ function createTrayUI() {
     },
     getNotifications: () => themeStore.notifications,
     onToggleNotification: setNotification,
+    onTestNotification: () => {
+      notify('测试通知', '如果看到这条，通知功能正常');
+    },
     isAutoStart: () => autoStartEnabled,
     onToggleAutoStart: async (enabled) => {
       await setAutoStart(enabled);
@@ -584,10 +617,10 @@ async function init() {
 
     autoStartEnabled = await isAutoStartEnabled();
 
-    // DeepSeek 用量跟踪：余额 + 本次启动消费（基线 = 启动时余额），每 60s 刷新
+    // DeepSeek 用量跟踪：余额 + 本次启动消费（基线 = 启动时余额），每 30s 刷新（匹配网页端）
     usage = new UsageTracker();
     usage.on('updated', updateStatus);
-    usage.start(60000);
+    usage.start(30000);
 
     createTrayUI();
     setupJumpList();
