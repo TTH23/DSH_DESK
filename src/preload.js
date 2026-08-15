@@ -116,6 +116,12 @@ function rgba(hex, alpha) {
   const c = hexToRgb(hex);
   return c ? `rgba(${c.r},${c.g},${c.b},${alpha})` : hex;
 }
+function lighten(hex, factor) {
+  const c = hexToRgb(hex);
+  if (!c) return hex;
+  const mix = (v) => Math.round(v + (255 - v) * factor);
+  return `rgb(${mix(c.r)},${mix(c.g)},${mix(c.b)})`;
+}
 
 // 真实页面元素着色：覆盖 DSH 主题 token（按钮/链接/选中态/悬停底色跟随所选色）。
 // 基础样式表把 token 定义在 body / body[data-ds-dark-theme] 上（CSS 变量就近继承，
@@ -126,6 +132,13 @@ const THEME_TOKEN_VARS = [
   ['--dsw-alias-state-business-tertiary', (c) => rgba(c, 0.22)],
   ['--dsw-alias-interactive-bg-hover', (c) => rgba(c, 0.12)],
   ['--dsw-alias-interactive-bg-active', (c) => rgba(c, 0.18)],
+  // 发送/停止按钮底色（原为 deepseek 品牌蓝）
+  ['--dsw-alias-button-info-fill', (c) => c],
+  ['--dsw-alias-button-info-hover', (c) => lighten(c, 0.2)],
+  // 静态品牌色："Deep diving..." 等文字渐变/logo/品牌点缀
+  ['--dsw-static-deepseek-500', (c) => c],
+  ['--dsw-static-deepseek-400', (c) => lighten(c, 0.2)],
+  ['--dsw-static-deepseek-200', (c) => lighten(c, 0.55)],
 ];
 
 function applyTokenOverrides(color) {
