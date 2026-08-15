@@ -605,9 +605,15 @@ function lastReplyText() {
       const el = items[i];
       // 跳过思考指示（role=status）、按钮行、空块
       if (el.closest('[role="status"]') || el.querySelector('[role="status"]')) continue;
-      if (el.closest('button') || el.querySelector('button') && (el.textContent || '').trim().length < 30) continue;
-      const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (text.length >= 4) return text;
+      if (el.closest('button') || (el.querySelector('button') && (el.textContent || '').trim().length < 30)) continue;
+      let text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text.length < 4) continue;
+      // 先剥掉回复尾部附带的统计段（"… 输出 456 tok"）
+      text = text.split(/\s+(?:输入|输出|input|output)\s*[\d.,kKmM]+\s*tok\b/i)[0].trim();
+      if (text.length < 4) continue;
+      // 剥完后仍是短 token 文本 → 纯统计行（"输入 X tok · 输出 Y tok"、"X tok/s"），跳过
+      if (/token|\btok\b/i.test(text) && text.length < 80) continue;
+      return text;
     }
   } catch {
     /* ignore */
