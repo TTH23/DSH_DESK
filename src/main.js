@@ -1,7 +1,7 @@
 'use strict';
 // DSH Desk —— DeepSeek Harness 桌面托盘程序
 // 主进程：管理窗口（支持多窗口）、托盘、开机自启，以及 DSH 服务进程的生命周期
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -27,6 +27,59 @@ let manager = null;
 let isQuitting = false;
 let autoStartEnabled = false;
 const windows = new Set(); // 所有窗口（含主窗口），用于多窗口管理
+
+// ---------- 窗口配色（每窗口独立主题色，持久化到 userData/theme.json） ----------
+let themeStore = { nextId: 2, windows: {} }; // 附加窗口从 2 开始编号；主窗口固定 1
+
+function themeFile() {
+  return path.join(app.getPath('userData'), 'theme.json');
+}
+
+function loadThemeStore() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(themeFile(), 'utf8'));
+    if (parsed && typeof parsed.nextId === 'number' && parsed.windows && typeof parsed.windows === 'object') {
+      themeStore = parsed;
+      if (themeStore.nextId < 2) themeStore.nextId = 2;
+    }
+  } catch {
+    /* 首次运行：使用默认 */
+  }
+}
+
+function saveThemeStore() {
+  try {
+    fs.writeFileSync(themeFile(), JSON.stringify(themeStore, null, 2));
+  } catch {
+    /* ignore */
+  }
+}
+
+function windowColor(winId) {
+  return themeStore.windows[String(winId)] || null;
+}
+
+function nextWinId() {
+  const id = themeStore.nextId;
+  themeStore.nextId = id + 1;
+  saveThemeStore();
+  return id;
+}
+
+// 窗口调色板选色/清除：校验 hex → 持久化 → 回发应用
+ipcMain.on('dsh-desk:set-color', (event, color) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win._winId === undefined) return;
+  if (color === null || color === undefined || color === '') {
+    delete themeStore.windows[String(win._winId)];
+  } else if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) {
+    themeStore.windows[String(win._winId)] = color.toLowerCase();
+  } else {
+    return; // 非法输入：忽略
+  }
+  saveThemeStore();
+  win.webContents.send('dsh-desk:theme', { color: windowColor(win._winId), winId: win._winId });
+});
 
 // ---------- 开机自启（HKCU Run 键） ----------
 function autoStartCommand() {
@@ -63,9 +116,11 @@ function setAutoStart(enabled) {
  * 创建窗口。
  * @param {object} [opts]
  * @param {boolean} [opts.primary] 主窗口（默认 true）：点 ✕ 隐藏到托盘；附加窗口点 ✕ 直接关闭
+ * @param {number} [opts.winId] 指定窗口 ID（主窗口固定 1；缺省时新窗口自动递增）
  */
 function createWindow(opts = {}) {
   const isPrimary = opts.primary !== false;
+  const winId = opts.winId ?? (isPrimary ? 1 : nextWinId());
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -84,6 +139,15 @@ function createWindow(opts = {}) {
     },
   });
   win.setMenuBarVisibility(false);
+  win._winId = winId;
+
+  // DSH 界面加载完成 → 下发该窗口的配色（preload 应用顶栏/按钮色）
+  win.webContents.on('did-finish-load', () => {
+    win._loadRetries = 0;
+    if (win.webContents.getURL().startsWith('http')) {
+      win.webContents.send('dsh-desk:theme', { color: windowColor(win._winId), winId: win._winId });
+    }
+  });
 
   // 窗口标题固定为 "DSH Desk"：DSH 页面自带 <title>（如 "DeepSeek Harness"）会覆盖标题栏
   win.webContents.on('page-title-updated', (e) => {
@@ -123,9 +187,6 @@ function createWindow(opts = {}) {
       win._loadRetries++;
       setTimeout(() => navigateTo(win, manager.url, true), 1200);
     }
-  });
-  win.webContents.on('did-finish-load', () => {
-    win._loadRetries = 0;
   });
 
   windows.add(win);
@@ -390,6 +451,7 @@ async function init() {
       }
     });
 
+    loadThemeStore();
     manager = new DshManager({ logDir: path.join(app.getPath('userData'), 'logs') });
     manager.on('stage', (stage) => {
       updateStatus();
