@@ -43,13 +43,17 @@ let prevSesKey = null;
 let stateLoaded = false;
 
 // 会话层级 nav 里当前会话（disabled 的 crumb）文本 = 当前会话标题
-function detectContext() {
-  let sesKey = '';
+function currentSessionKey() {
   const nav = document.querySelector(SESS_NAV_SELECTOR);
   if (nav) {
     const cur = nav.querySelector('button[disabled]');
-    if (cur) sesKey = (cur.textContent || '').trim();
+    if (cur) return (cur.textContent || '').trim();
   }
+  return '';
+}
+
+function detectContext() {
+  const sesKey = currentSessionKey();
   let wsKey = '';
   // ① hero 页的工作区芯片
   const wsBtn = document.querySelector(WS_SELECTOR);
@@ -57,12 +61,45 @@ function detectContext() {
     const label = (wsBtn.textContent || '').trim();
     if (label && !WS_PLACEHOLDERS.includes(label)) wsKey = label;
   }
-  // ② 会话内：侧边栏工作区树中，包含当前会话标题的那个工作区
+  // ② 会话内：侧边栏工作区树定位
   if (!wsKey) wsKey = detectWorkspaceInSidebar(sesKey) || '';
   // ③ 回退：最近一次可见的工作区
   if (!wsKey) wsKey = lastWorkspaceKey;
   if (wsKey) lastWorkspaceKey = wsKey;
   return { wsKey, sesKey };
+}
+
+const ACTION_LABEL_RE = /工作区["“「]([^"”」]+)["”」]|Workspace actions for (.+)/;
+const WS_ACTION_SEL = 'button[aria-label*="的操作"], button[aria-label*="Workspace actions"]';
+
+// 侧边栏工作区树定位：① 当前会话行（aria-selected=true）向上找所属工作区行；
+// ② 回退：包含当前会话标题的工作区行
+function detectWorkspaceInSidebar(sesKey) {
+  const cur = document.querySelector('[role="treeitem"][aria-selected="true"]');
+  if (cur) {
+    let node = cur.parentElement;
+    while (node && node !== document.body) {
+      if (node.getAttribute && node.getAttribute('role') === 'treeitem') {
+        const btn = node.querySelector(WS_ACTION_SEL);
+        if (btn) {
+          const m = ACTION_LABEL_RE.exec(btn.getAttribute('aria-label') || '');
+          const name = m ? (m[1] || m[2] || '').trim() : '';
+          if (name) return name;
+        }
+      }
+      node = node.parentElement;
+    }
+  }
+  if (sesKey) {
+    for (const row of document.querySelectorAll('[role="treeitem"]')) {
+      const btn = row.querySelector(WS_ACTION_SEL);
+      if (!btn) continue;
+      const m = ACTION_LABEL_RE.exec(btn.getAttribute('aria-label') || '');
+      const name = m ? (m[1] || m[2] || '').trim() : '';
+      if (name && row.textContent.includes(sesKey)) return name;
+    }
+  }
+  return null;
 }
 
 // 当前应显示的颜色：按模式 + 上下文解析（无匹配 → 默认）
@@ -71,22 +108,6 @@ function resolveColor() {
   if (themeMode === 'workspace') return wsKey ? wsColors[wsKey] || null : null;
   if (themeMode === 'session') return sesKey ? sesColors[sesKey] || null : null;
   return windowColor;
-}
-
-// 侧边栏工作区树定位：每个工作区行带 "工作区“{name}”的操作" 按钮；
-// 包含当前会话标题（sessionTitle）的树节点所在的工作区行 = 当前工作区
-function detectWorkspaceInSidebar(sessionTitle) {
-  const ACTION_LABEL_RE = /工作区["“「]([^"”」]+)["”」]|Workspace actions for (.+)/;
-  const rows = Array.from(document.querySelectorAll('[role="treeitem"]')).filter((el) =>
-    el.querySelector('button[aria-label*="的操作"], button[aria-label*="Workspace actions"]')
-  );
-  for (const row of rows) {
-    const btn = row.querySelector('button[aria-label*="的操作"], button[aria-label*="Workspace actions"]');
-    const m = ACTION_LABEL_RE.exec(btn.getAttribute('aria-label') || '');
-    const name = m ? (m[1] || m[2] || '').trim() : '';
-    if (name && sessionTitle && row.textContent.includes(sessionTitle)) return name;
-  }
-  return null;
 }
 
 // 查找设置触发键：侧边栏底部的齿轮按钮（aria-haspopup=dialog，含 "设置"/"Settings" 文案或为最左侧的 dialog 触发键）
@@ -456,7 +477,7 @@ function initPicker() {
     ctxTimer.id = setTimeout(() => {
       ctxTimer.id = null;
       checkContextChanged();
-    }, 60);
+    }, 25); // 防抖收紧：切换会话后 ~25ms 内换色
   };
   const ctxSelector = SESS_NAV_SELECTOR + ', ' + WS_SELECTOR;
   try {
@@ -494,6 +515,7 @@ function initPicker() {
 }
 
 // 上下文（工作区/会话）变化 → 按新模式重算颜色（即时监听与轮询共用）
+let followUpScheduled = false;
 function checkContextChanged() {
   const { wsKey, sesKey } = detectContext();
   if (wsKey !== prevWsKey || sesKey !== prevSesKey) {
@@ -501,6 +523,14 @@ function checkContextChanged() {
     prevSesKey = sesKey;
     applyTheme(resolveColor());
     updatePaletteUI();
+    // 侧边栏工作区树可能比面包屑晚一步更新：400ms 后复查一次
+    if (!followUpScheduled) {
+      followUpScheduled = true;
+      setTimeout(() => {
+        followUpScheduled = false;
+        checkContextChanged();
+      }, 400);
+    }
   }
 }
 
