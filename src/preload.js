@@ -118,7 +118,8 @@ function rgba(hex, alpha) {
 }
 
 // 真实页面元素着色：覆盖 DSH 主题 token（按钮/链接/选中态/悬停底色跟随所选色）。
-// 用 !important 的 :root + [data-ds-dark-theme] 规则压过应用自带样式。
+// 基础样式表把 token 定义在 body / body[data-ds-dark-theme] 上（CSS 变量就近继承，
+// 只覆盖 :root 无效），因此这里同样以 body 为目标选择器 + !important 压过它。
 const THEME_TOKEN_VARS = [
   ['--dsw-alias-brand-primary', (c) => c],
   ['--dsw-alias-state-business-primary', (c) => c],
@@ -129,8 +130,13 @@ const THEME_TOKEN_VARS = [
 
 function applyTokenOverrides(color) {
   let style = document.getElementById('dsh-desk-theme-override');
+  const body = document.body;
   if (!color) {
     if (style) style.remove();
+    // 移除 body 内联覆盖
+    if (body) {
+      for (const [name] of THEME_TOKEN_VARS) body.style.removeProperty(name);
+    }
     return;
   }
   if (!style) {
@@ -138,9 +144,12 @@ function applyTokenOverrides(color) {
     style.id = 'dsh-desk-theme-override';
     document.documentElement.appendChild(style);
   }
-  const lines = [':root, [data-ds-dark-theme] {'];
+  const lines = [':root, body, body[data-ds-dark-theme] {'];
   for (const [name, derive] of THEME_TOKEN_VARS) {
-    lines.push(`  ${name}: ${derive(color)} !important;`);
+    const value = derive(color);
+    lines.push(`  ${name}: ${value} !important;`);
+    // 双保险：body 内联 !important（防主题运行时以同样方式覆盖）
+    if (body) body.style.setProperty(name, value, 'important');
   }
   lines.push('}');
   style.textContent = lines.join('\n');
