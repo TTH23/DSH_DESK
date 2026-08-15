@@ -67,6 +67,9 @@ function createTray(opts) {
     items.push({ type: 'separator' });
     items.push({ label: '刷新用量', click: opts.onRefreshUsage });
     items.push({ label: '清零小计', click: opts.onResetUsage });
+    if (typeof opts.onOpenUsage === 'function') {
+      items.push({ label: '打开用量网页', click: opts.onOpenUsage });
+    }
     return items;
   }
 

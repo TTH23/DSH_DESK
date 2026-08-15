@@ -507,6 +507,9 @@ function createTrayUI() {
     onResetUsage: () => {
       if (usage) usage.resetBaseline();
     },
+    onOpenUsage: () => {
+      shell.openExternal('https://platform.deepseek.com/usage');
+    },
     getNotifications: () => themeStore.notifications,
     onToggleNotification: setNotification,
     onTestNotification: () => {
