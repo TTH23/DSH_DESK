@@ -603,10 +603,21 @@ function lastReplyText() {
     }
     for (let i = items.length - 1; i >= 0; i--) {
       const el = items[i];
-      // 跳过思考指示（role=status）、按钮行、空块
+      // 跳过思考指示（role=status）、思考块（data-variant=think）、按钮行、空块
       if (el.closest('[role="status"]') || el.querySelector('[role="status"]')) continue;
+      if (el.matches && el.matches('[data-variant="think"]')) continue;
+      if (el.closest('[data-variant="think"]')) continue;
       if (el.closest('button') || (el.querySelector('button') && (el.textContent || '').trim().length < 30)) continue;
-      let text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      let text;
+      // 回复块内可能内嵌思考块（"Think" 标题 + 思考正文）：克隆后剔除再取文本
+      const think = el.querySelector('[data-variant="think"]');
+      if (think) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll('[data-variant="think"]').forEach((n) => n.remove());
+        text = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      } else {
+        text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      }
       if (text.length < 4) continue;
       // 先剥掉回复尾部附带的统计段（"… 输出 456 tok"）
       text = text.split(/\s+(?:输入|输出|input|output)\s*[\d.,kKmM]+\s*tok\b/i)[0].trim();
