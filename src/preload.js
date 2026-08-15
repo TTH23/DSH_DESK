@@ -3,8 +3,9 @@
 // 1) 把主进程的 stage/log/ready/failed 事件转发给加载页（loading.html）
 // 2) 窗口配色：在 DSH 网页内注入悬浮调色板（每窗口独立），选色后给该窗口
 //    加主题色顶栏 + 彩色按钮，用于多窗口互相区分（颜色由主进程按窗口持久化）
-// 3) 调色板按钮动态锚定到发送键（aria-label=发送消息/Send message，运行时为
-//    停止/Stop）正上方，避免遮挡输入区；找不到时回退到安全位置并持续跟随布局
+// 3) 调色板按钮动态锚定到设置键（侧边栏底部齿轮，aria-haspopup=dialog）正上方，
+//    避免遮挡交互区；找不到时回退到发送键/输入框上方，再回退到安全位置，
+//    并持续跟随布局变化（滚动/缩放/重渲染）
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('dshDesk', {
@@ -19,7 +20,23 @@ const BTN_SIZE = 40;
 let currentColor = null; // '#rrggbb' 或 null
 let winId = null;
 
-// 查找主输入区的锚点：优先发送/停止按钮，其次主 textarea
+// 查找设置触发键：侧边栏底部的齿轮按钮（aria-haspopup=dialog，含 "设置"/"Settings" 文案或为最左侧的 dialog 触发键）
+function findSettingsButton() {
+  const candidates = Array.from(
+    document.querySelectorAll('button[aria-haspopup="dialog"]')
+  ).filter((b) => {
+    const r = b.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+  if (!candidates.length) return null;
+  const labeled = candidates.filter((b) => /设置|Settings/.test(b.textContent || ''));
+  const pool = labeled.length ? labeled : candidates;
+  // 侧边栏在页面左侧：取最靠左的（设置键位于侧边栏底部）
+  pool.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+  return pool[0];
+}
+
+// 查找主输入区的锚点（回退用）：优先发送/停止按钮，其次主 textarea
 function findComposer() {
   const sendBtn = document.querySelector(
     'button[aria-label="发送消息"], button[aria-label="Send message"], ' +
@@ -44,35 +61,39 @@ function findComposer() {
   return { sendBtn, textarea };
 }
 
-// 把调色板按钮（及展开面板）锚定到锚点正上方，右缘对齐
+// 把调色板按钮（及展开面板）锚定到设置键正上方（水平居中）；找不到设置键时
+// 回退到发送键/输入框上方，最后回退到右下角偏上位置
 function positionPalette() {
   const btn = document.getElementById('dsh-desk-palette-btn');
   const panel = document.getElementById('dsh-desk-palette');
   if (!btn) return;
-  const { sendBtn, textarea } = findComposer();
-  const anchor = sendBtn || textarea;
+  const anchor = findSettingsButton() || findComposer().sendBtn || findComposer().textarea;
   if (anchor) {
     const r = anchor.getBoundingClientRect();
     if (r.width > 0 && r.height > 0 && r.top > 0) {
-      const gap = 12;
-      const right = Math.max(8, window.innerWidth - r.right);
-      const bottom = Math.max(8, window.innerHeight - r.top + gap);
-      btn.style.right = right + 'px';
+      const gap = 10;
+      const left = Math.max(4, r.left + r.width / 2 - BTN_SIZE / 2);
+      const bottom = Math.max(4, window.innerHeight - r.top + gap);
+      btn.style.left = left + 'px';
+      btn.style.right = 'auto';
       btn.style.bottom = bottom + 'px';
       btn.classList.add('dsh-desk-anchored');
       if (panel) {
-        panel.style.right = right + 'px';
+        panel.style.left = left + 'px';
+        panel.style.right = 'auto';
         panel.style.bottom = bottom + BTN_SIZE + 10 + 'px';
       }
       return;
     }
   }
-  // 兜底：右下角偏上，避开常见发送区
+  // 兜底：右下角偏上，避开常见交互区
   btn.style.right = '16px';
+  btn.style.left = 'auto';
   btn.style.bottom = '96px';
   btn.classList.remove('dsh-desk-anchored');
   if (panel) {
     panel.style.right = '16px';
+    panel.style.left = 'auto';
     panel.style.bottom = '152px';
   }
 }
