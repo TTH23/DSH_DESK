@@ -58,7 +58,7 @@ function createTray(opts) {
     let label;
     if (!u.keyConfigured) label = '未配置 API Key';
     else if (u.error) label = `查询失败（${u.error}）`;
-    else label = `余额 ¥${fmt(u.balance)} · 本次消费 ¥${fmt(u.spent)}`;
+    else label = `¥${fmt(u.balance)} · -¥${fmt(u.spent)}`;
     return [
       { label, enabled: false },
       { type: 'separator' },
@@ -95,8 +95,8 @@ function createTray(opts) {
     if (!u.keyConfigured) return [{ label: '用量：未配置 Key', enabled: false }];
     if (u.error) return [{ label: truncate(`用量失败：${u.error}`), enabled: false }];
     return [
-      { label: `余额 ¥${fmt(u.balance)}`, enabled: false },
-      { label: `本次消费 ¥${fmt(u.spent)}`, enabled: false },
+      { label: `¥${fmt(u.balance)}`, enabled: false },
+      { label: `-¥${fmt(u.spent)}`, enabled: false },
     ];
   }
 
