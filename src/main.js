@@ -270,16 +270,8 @@ function createWindow(opts = {}) {
 
   // DSH 界面加载完成 → 重置加载重试计数（主题状态由 preload 自行通过 IPC 获取）
 
-  // 窗口标题统一为 "DSH Desk · <会话名>"：页面自带标题（"<会话名> — DeepSeek Harness"）
-  // 会被拦截并转换成统一格式，避免横杠/圆点两种格式跳动
-  win.webContents.on('page-title-updated', (_e, title) => {
-    _e.preventDefault();
-    const t = String(title || '').trim();
-    const idx = t.lastIndexOf(' — ');
-    const session = idx > 0 ? t.slice(0, idx).trim() : t;
-    const isBase = !session || /^(DeepSeek Harness|DSH Desk)$/i.test(session);
-    win.setTitle(isBase ? 'DSH Desk' : `DSH Desk · ${session}`);
-  });
+  // 窗口标题直接采用 DSH 页面自身的格式（"<会话名> — DeepSeek Harness"），
+  // 不拦截、不转换，避免多写入者导致标题跳动
 
   // 主窗口点 ✕ → 隐藏到托盘（服务继续运行）；附加窗口点 ✕ → 直接关闭
   win.on('close', (e) => {
