@@ -590,41 +590,51 @@ function hasQueuedMessages() {
   return Boolean(document.querySelector(QUEUE_SEL));
 }
 
+// 从单个消息块提取回复文本（剔除思考块/统计段）
+function cleanReplyText(el) {
+  if (el.closest('[role="status"]') || el.querySelector('[role="status"]')) return '';
+  if (el.matches && el.matches('[data-variant="think"]')) return '';
+  if (el.closest('[data-variant="think"]')) return '';
+  if (el.closest('button') || (el.querySelector('button') && (el.textContent || '').trim().length < 30)) return '';
+  // 回复块内可能内嵌思考块（"Think" 标题 + 思考正文）：克隆后剔除再取文本
+  let text;
+  const think = el.querySelector('[data-variant="think"]');
+  if (think) {
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('[data-variant="think"]').forEach((n) => n.remove());
+    text = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+  } else {
+    text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+  if (text.length < 4) return '';
+  // 剥掉回复尾部附带的统计段（"… 输出 456 tok"）
+  text = text.split(/\s+(?:输入|输出|input|output)\s*[\d.,kKmM]+\s*tok\b/i)[0].trim();
+  if (text.length < 4) return '';
+  // 剥完后仍是短 token 文本 → 纯统计行（"输入 X tok · 输出 Y tok"、"X tok/s"），跳过
+  if (/token|\btok\b/i.test(text) && text.length < 80) return '';
+  return text;
+}
+
 // 提取最后一条回复的开头文本（供完成通知第二行显示）
 function lastReplyText() {
   try {
     const scroll = document.querySelector('[data-conversation-scroll]');
     if (!scroll) return '';
+    // ① 精确定位：消息流项带 data-chat-flow-kind（节点类型），assistant 回复 = assistant-step
+    const steps = Array.from(scroll.querySelectorAll('[data-chat-flow-kind="assistant-step"]'));
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const t = cleanReplyText(steps[i]);
+      if (t) return t;
+    }
+    // ② 回退：类名启发式（老版本无 data-chat-flow-kind 时）
     let items = Array.from(scroll.querySelectorAll('[class*="flowItem"]'));
     if (!items.length) {
-      // 回退：结构定位——找含较多文本的深层块
       const divs = Array.from(scroll.querySelectorAll('div'));
       items = divs.filter((el) => (el.textContent || '').trim().length > 20 && el.querySelectorAll('div').length <= 4);
     }
     for (let i = items.length - 1; i >= 0; i--) {
-      const el = items[i];
-      // 跳过思考指示（role=status）、思考块（data-variant=think）、按钮行、空块
-      if (el.closest('[role="status"]') || el.querySelector('[role="status"]')) continue;
-      if (el.matches && el.matches('[data-variant="think"]')) continue;
-      if (el.closest('[data-variant="think"]')) continue;
-      if (el.closest('button') || (el.querySelector('button') && (el.textContent || '').trim().length < 30)) continue;
-      let text;
-      // 回复块内可能内嵌思考块（"Think" 标题 + 思考正文）：克隆后剔除再取文本
-      const think = el.querySelector('[data-variant="think"]');
-      if (think) {
-        const clone = el.cloneNode(true);
-        clone.querySelectorAll('[data-variant="think"]').forEach((n) => n.remove());
-        text = (clone.textContent || '').replace(/\s+/g, ' ').trim();
-      } else {
-        text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      }
-      if (text.length < 4) continue;
-      // 先剥掉回复尾部附带的统计段（"… 输出 456 tok"）
-      text = text.split(/\s+(?:输入|输出|input|output)\s*[\d.,kKmM]+\s*tok\b/i)[0].trim();
-      if (text.length < 4) continue;
-      // 剥完后仍是短 token 文本 → 纯统计行（"输入 X tok · 输出 Y tok"、"X tok/s"），跳过
-      if (/token|\btok\b/i.test(text) && text.length < 80) continue;
-      return text;
+      const t = cleanReplyText(items[i]);
+      if (t) return t;
     }
   } catch {
     /* ignore */
