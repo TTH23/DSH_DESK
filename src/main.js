@@ -141,11 +141,7 @@ ipcMain.on('dsh-desk:test-notification', () => {
   notify('测试通知', '如果看到这条，通知功能正常');
 });
 
-// 窗口标题：侧边栏隐藏时由页面上报当前会话名（无则恢复 "DSH Desk"）
-ipcMain.on('dsh-desk:title', (event, text) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (win && !win.isDestroyed()) win.setTitle(text || 'DSH Desk');
-});
+// 窗口标题统一由 page-title-updated 转换处理（见 createWindow），不再走 IPC
 
 // 工作区检测诊断（写入 logs/diag.log）
 ipcMain.on('dsh-desk:diag', (_event, data) => {
@@ -274,9 +270,15 @@ function createWindow(opts = {}) {
 
   // DSH 界面加载完成 → 重置加载重试计数（主题状态由 preload 自行通过 IPC 获取）
 
-  // 窗口标题固定为 "DSH Desk"：DSH 页面自带 <title>（如 "DeepSeek Harness"）会覆盖标题栏
-  win.webContents.on('page-title-updated', (e) => {
-    e.preventDefault();
+  // 窗口标题统一为 "DSH Desk · <会话名>"：页面自带标题（"<会话名> — DeepSeek Harness"）
+  // 会被拦截并转换成统一格式，避免横杠/圆点两种格式跳动
+  win.webContents.on('page-title-updated', (_e, title) => {
+    _e.preventDefault();
+    const t = String(title || '').trim();
+    const idx = t.lastIndexOf(' — ');
+    const session = idx > 0 ? t.slice(0, idx).trim() : t;
+    const isBase = !session || /^(DeepSeek Harness|DSH Desk)$/i.test(session);
+    win.setTitle(isBase ? 'DSH Desk' : `DSH Desk · ${session}`);
   });
 
   // 主窗口点 ✕ → 隐藏到托盘（服务继续运行）；附加窗口点 ✕ → 直接关闭

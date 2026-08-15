@@ -542,23 +542,9 @@ function initPicker() {
     checkPageReady();
     checkContextChanged();
     checkTaskState();
-    sendTitleIfNeeded(); // 侧边栏隐藏时窗口标题显示当前会话名
     applyTokenOverrides(currentColor); // 防止深浅主题切换/重渲染时被重置
     positionPalette();
   }, 1200);
-}
-
-// ---------- 窗口标题：始终跟随当前会话名 ----------
-let lastSentTitle = null;
-
-function sendTitleIfNeeded() {
-  if (location.protocol !== 'http:') return;
-  const { sesKey } = detectContext();
-  const title = sesKey ? `DSH Desk · ${sesKey}` : 'DSH Desk';
-  if (title !== lastSentTitle) {
-    lastSentTitle = title;
-    ipcRenderer.send('dsh-desk:title', title);
-  }
 }
 
 // 上下文（工作区/会话）变化 → 按新模式重算颜色（即时监听与轮询共用）
@@ -571,7 +557,6 @@ function checkContextChanged() {
     prevSesKey = sesKey;
     applyTheme(resolveColor());
     updatePaletteUI();
-    sendTitleIfNeeded(); // 会话切换 → 标题立即跟随
     // 侧边栏工作区树可能比面包屑晚一步更新：400ms 后复查一次
     if (!followUpScheduled) {
       followUpScheduled = true;
