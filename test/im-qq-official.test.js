@@ -327,7 +327,7 @@ test('send 带 keyboard：markdown 消息 + 指令按钮（按钮只能 markdown
   t.after(() => adapter.stop());
   await new Promise((resolve) => adapter.once('connected', resolve));
   adapter.send({ type: 'private', id: 'u-allow' }, '点按钮选择\n第二行', {
-    keyboard: { rows: [{ buttons: [{ label: '工作区A', cmd: '/bot ws 工作区A' }, { label: '工作区B', cmd: '/bot ws 工作区B' }] }] },
+    keyboard: { rows: [{ buttons: [{ label: '工作区A', cmd: '/ws 工作区A' }, { label: '工作区B', cmd: '/ws 工作区B' }] }] },
   });
   await new Promise((r) => setTimeout(r, 200));
   assert.strictEqual(api.posts.length, 1);
@@ -343,7 +343,7 @@ test('send 带 keyboard：markdown 消息 + 指令按钮（按钮只能 markdown
   assert.ok(btns[0].id !== btns[1].id);
   assert.strictEqual(btns[0].render_data.label, '工作区A');
   assert.strictEqual(btns[0].action.type, 2, '指令按钮 type=2');
-  assert.strictEqual(btns[0].action.data, '/bot ws 工作区A', '指令按钮 data=点击后发送的命令');
+  assert.strictEqual(btns[0].action.data, '/ws 工作区A', '指令按钮 data=点击后发送的命令');
   assert.strictEqual(btns[0].action.enter, true, '点击后自动发送');
   assert.strictEqual(btns[0].action.permission.type, 2);
 });
@@ -413,7 +413,7 @@ test('INTERACTION_CREATE(type=11) → PUT 回应互动（防客户端 loading �
       scene: 'c2c',
       chat_type: 2,
       user_openid: 'u-allow',
-      data: { type: 11, resolved: { button_id: 'whatever', button_data: '/bot ws 工作区A' } },
+      data: { type: 11, resolved: { button_id: 'whatever', button_data: '/ws 工作区A' } },
     },
   });
   await new Promise((r) => setTimeout(r, 200));

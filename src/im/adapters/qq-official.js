@@ -7,7 +7,7 @@
 //   心跳    op1 携带最后 seq；断线重连 op6 RESUME（失败重新 IDENTIFY）
 //   事件    GROUP_AT_MESSAGE_CREATE（群 @）、C2C_MESSAGE_CREATE（单聊）、INTERACTION_BUTTON_CLICK（按钮点击）
 //   发送    POST https://api.sgroup.qq.com/v2/groups/{group_openid}/messages 或 /v2/users/{user_openid}/messages
-// 按钮（keyboard）：/bot ws、/bot ses 列表附带按钮，data 编码命令文本；点击 → INTERACTION_BUTTON_CLICK → 当消息处理。
+// 按钮（keyboard）：/ws、/ses 列表附带按钮，data 编码命令文本；点击 → INTERACTION_BUTTON_CLICK → 当消息处理。
 // 白名单（allowUsers/allowGroups，openid）为可选：留空 = 允许所有能联系到机器人的用户。
 const { EventEmitter } = require('node:events');
 const https = require('node:https');

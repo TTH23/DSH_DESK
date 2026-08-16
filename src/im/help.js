@@ -1,5 +1,5 @@
 'use strict';
-// 机器人文案：首次使用欢迎消息 + /bot help 完整帮助（纯文本，适配器按 QQ 限长自动分段）
+// 机器人文案：首次使用欢迎消息 + /help 完整帮助（纯文本，适配器按 QQ 限长自动分段）
 
 const WELCOME_TEXT = [
   '👋 已连接 DSH Desk 远程机器人',

@@ -1,5 +1,5 @@
 'use strict';
-// IM 桥接核心：适配器消息 → 命令分发（普通文本提示词 / /斜杠命令透传 / /bot 控制）→ dsh-api → 回写 IM；
+// IM 桥接核心：适配器消息 → 命令分发（普通文本提示词 / /斜杠命令透传 / 短命令控制）→ dsh-api → 回写 IM；
 // 订阅 mux 事件收集回复，轮询 running 检测任务完成并推送。
 const { EventEmitter } = require('node:events');
 const { MODE_PURE, MODE_ALL, renderHistory, truncate, textOfMessage, thinkTextOfMessage } = require('./render');
@@ -23,16 +23,8 @@ function sameChat(a, b) {
   return a && b && a.type === b.type && String(a.id) === String(b.id);
 }
 
-/** 解析 /bot 命令：兼容 `/bot xxx` 与 `/bot+xxx`（QQ 菜单/面板点击填入时空格被 URL 编码为 +） */
-function normalizeBotCmd(text) {
-  let s = String(text || '').trim();
-  if (!/^\/bot/i.test(s)) return null;
-  s = s.replace(/^\/bot/i, '').replace(/\+/g, ' ').trim(); // 前缀后的 + 全部还原为空格
-  return s;
-}
-
 /** 短命令白名单：/ws /ses /setting /status /usage /history /model /stop /queue /help
- * 直接作为机器人命令（去掉 /bot 前缀）；其余 / 开头仍透传 dsh */
+ * 直接作为机器人命令；其余 / 开头仍透传 dsh */
 const SHORT_CMDS = new Set(['ws', 'ses', 'setting', 'status', 'usage', 'history', 'model', 'stop', 'queue', 'help']);
 function SHORT_CMD(text) {
   const s = String(text || '').trim();
@@ -55,7 +47,7 @@ function pick(list, query) {
     const it = (list || [])[idx];
     if (it) return it;
   }
-  // ID 前缀匹配：会话无标题时发 /bot ses <ID前缀> 即可选中
+  // ID 前缀匹配：会话无标题时发 /ses <ID前缀> 即可选中
   const byIdPrefix = (list || []).find(
     (it) => (it.sessionId && it.sessionId.startsWith(q)) || (it.workspaceId && it.workspaceId.startsWith(q)) || (it.id && it.id.startsWith(q))
   );
@@ -275,26 +267,20 @@ class ImBridge extends EventEmitter {
     const binding = this.mapper.get(platform, chatId);
     if (!binding) {
       this.mapper.set(platform, chatId, { welcomed: true });
-      // /bot 指令、短命令 与 /help 视为"立即响应"命令：欢迎后继续处理（不拦截）
-      const isBotCmd = Boolean(normalizeBotCmd(text)) || SHORT_CMD(text) !== null || text.trim().toLowerCase() === '/help';
+      // 短命令 与 /help 视为"立即响应"命令：欢迎后继续处理（不拦截）
+      const isBotCmd = SHORT_CMD(text) !== null || text.trim().toLowerCase() === '/help';
       this._reply(chat, WELCOME_TEXT, adapter);
       this._log('welcomed channel', chatId);
       if (!isBotCmd) return; // 普通文本/斜杠命令：先引导，不再追加"未绑定"提示
     }
 
-    // 命令识别：/bot xxx（兼容 /bot+xxx）与 短命令 /xxx 都支持。
-    // 短命令白名单：仅这些直接作为机器人命令，其余 / 开头仍透传 dsh（如 /plan、/goal）
-    const botArgs = normalizeBotCmd(text);
-    if (botArgs !== null) {
-      await this._handleControl(adapter, platform, chat, chatId, botArgs);
-      return;
-    }
+    // 命令识别：短命令 /xxx 直接作为机器人命令，其余 / 开头仍透传 dsh（如 /plan、/goal）
     const short = SHORT_CMD(text);
     if (short !== null) {
       await this._handleControl(adapter, platform, chat, chatId, short);
       return;
     }
-    // /help → 机器人帮助（与 /bot help 一致；未绑定也能查）
+    // /help → 机器人帮助（未绑定也能查）
     if (text.trim().toLowerCase() === '/help') {
       this._reply(chat, HELP_TEXT, adapter);
       return;
@@ -317,7 +303,7 @@ class ImBridge extends EventEmitter {
     const chatId = chatIdOf(chat);
     const binding = this.mapper.get(platform, chatId);
     if (!binding || !binding.sessionId) {
-      this._reply(chat, '尚未绑定会话：/bot ws 选择工作区，/bot ses 选择会话', adapter);
+      this._reply(chat, '尚未绑定会话：/ws 选择工作区，/ses 选择会话', adapter);
       return;
     }
     const sessionId = binding.sessionId;
@@ -351,7 +337,7 @@ class ImBridge extends EventEmitter {
     const hint = supportsBtn ? '👆 先选择工作区（点下方按钮，或回复编号）：\n' : '先选择工作区（回复编号）：\n';
     const lines = list.map((w, i) => `${i + 1}. ${w.title}`);
     const text = lines.length ? hint + lines.join('\n') : '（暂无工作区）';
-    this._reply(chat, text, adapter, supportsBtn ? { keyboard: keyboardOf(list, (w) => ({ label: shortLabel(w.title), cmd: `/bot ws ${w.title}` })) } : null);
+    this._reply(chat, text, adapter, supportsBtn ? { keyboard: keyboardOf(list, (w) => ({ label: shortLabel(w.title), cmd: `/ws ${w.title}` })) } : null);
   }
 
   /** 引导选择会话：只列当前工作区的会话 + 按钮 */
@@ -384,10 +370,10 @@ class ImBridge extends EventEmitter {
     const hint = supportsBtn ? `👆 选择会话 · ${scope}（点下方按钮，或回复编号）：\n` : `选择会话 · ${scope}（回复编号）：\n`;
     const lines = shown.map(sessionLine);
     const text = lines.length ? hint + lines.join('\n') : `（${scope}下暂无会话）`;
-    this._reply(chat, text, adapter, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名'), cmd: `/bot ses ${s.sessionId}` })) } : null);
+    this._reply(chat, text, adapter, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名'), cmd: `/ses ${s.sessionId}` })) } : null);
   }
 
-  // ---------- /bot 控制指令 ----------
+  // ---------- 控制指令 ----------
   async _handleControl(adapter, platform, chat, chatId, args) {
     const binding = this.mapper.get(platform, chatId);
     const parts = args.split(/\s+/);
@@ -415,7 +401,7 @@ class ImBridge extends EventEmitter {
           const supportsBtn = adapter && adapter.supportsKeyboard;
           const hint = supportsBtn ? '点下方按钮，或回复编号选择工作区：\n' : '回复编号选择工作区：\n';
           const text = lines.length ? hint + lines.join('\n') : '（无工作区）';
-          return reply(text, supportsBtn ? { keyboard: keyboardOf(list, (w) => ({ label: shortLabel(w.title), cmd: `/bot ws ${w.title}` })) } : null);
+          return reply(text, supportsBtn ? { keyboard: keyboardOf(list, (w) => ({ label: shortLabel(w.title), cmd: `/ws ${w.title}` })) } : null);
         }
         case 'ses': {
           // 归档依据 = workspace.list 响应的 archivedSessionIds（工作区的 sessionIds 里也含归档会话，
@@ -442,22 +428,22 @@ class ImBridge extends EventEmitter {
           const supportsBtn = adapter && adapter.supportsKeyboard;
           const hint = supportsBtn ? `点下方按钮，或回复编号选择会话 · ${scope}：\n` : `回复编号选择会话 · ${scope}：\n`;
           const text = lines.length ? hint + lines.join('\n') : `（${scope}下暂无会话）`;
-          // 按钮 label 用会话标题（超长省略）；指令 = /bot ses <完整ID>
-          return reply(text, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名'), cmd: `/bot ses ${s.sessionId}` })) } : null);
+          // 按钮 label 用会话标题（超长省略）；指令 = /ses <完整ID>
+          return reply(text, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名'), cmd: `/ses ${s.sessionId}` })) } : null);
         }
         case 'model': {
-          if (!binding || !binding.sessionId) return reply('先 /bot ses 绑定会话');
+          if (!binding || !binding.sessionId) return reply('先 /ses 绑定会话');
           const models = await this.dsh.models(binding.sessionId);
           if (arg) {
             const [provider, model] = arg.split('/');
-            if (!provider || !model) return reply('格式：/bot model <provider>/<model>');
+            if (!provider || !model) return reply('格式：/model <provider>/<model>');
             await this.dsh.selectModel(binding.sessionId, provider, model);
             return reply(`✅ 模型 → ${provider}/${model}`);
           }
           const groups = models.groups || [];
           const lines = groups.map((g) => `${g.name}：${(g.models || []).map((m) => `${m.id}（${m.name}）`).join('、')}`);
-          const text = lines.length ? '可用模型（点按钮或 /bot model <provider>/<model>）：\n' + lines.join('\n') : '（无模型信息）';
-          // 模型按钮：指令 = /bot model <provider>/<id>；provider 取 group 字段或当前 provider 兜底
+          const text = lines.length ? '可用模型（点按钮或 /model <provider>/<model>）：\n' + lines.join('\n') : '（无模型信息）';
+          // 模型按钮：指令 = /model <provider>/<id>；provider 取 group 字段或当前 provider 兜底
           const curProvider = models.current && (models.current.provider || '');
           const btns = groups.flatMap((g) => (g.models || []).map((m) => ({
             provider: g.provider || g.id || curProvider || g.name || '',
@@ -465,7 +451,7 @@ class ImBridge extends EventEmitter {
             label: m.name || m.id,
           })));
           const supportsBtn = adapter && adapter.supportsKeyboard;
-          return reply(text, supportsBtn && btns.length ? { keyboard: keyboardOf(btns, (b) => ({ label: shortLabel(b.label), cmd: `/bot model ${b.provider}/${b.model}` })) } : null);
+          return reply(text, supportsBtn && btns.length ? { keyboard: keyboardOf(btns, (b) => ({ label: shortLabel(b.label), cmd: `/model ${b.provider}/${b.model}` })) } : null);
         }
         case 'usage': {
           const u = this.usageFn();
@@ -502,7 +488,7 @@ class ImBridge extends EventEmitter {
           return reply(lines.join('\n'));
         }
         case 'history': {
-          if (!binding || !binding.sessionId) return reply('先 /bot ses 绑定会话');
+          if (!binding || !binding.sessionId) return reply('先 /ses 绑定会话');
           const n = Math.min(50, Math.max(1, parseInt(arg, 10) || 10));
           const h = await this.dsh.history(binding.sessionId, { limit: n });
           const lines = renderHistory(h.events || [], { mode: MODE_PURE, limit: n });
@@ -577,12 +563,12 @@ class ImBridge extends EventEmitter {
           return reply(lines.join('\n'), supportsBtn ? { keyboard: keyboardOf(mainBtns, (o) => ({ label: o.label, cmd: o.cmd })) } : null);
         }
         case 'stop': {
-          if (!binding || !binding.sessionId) return reply('先 /bot ses 绑定会话');
+          if (!binding || !binding.sessionId) return reply('先 /ses 绑定会话');
           await this.dsh.cancel(binding.sessionId);
           return reply('🛑 已请求打断当前生成');
         }
         case 'queue': {
-          if (!binding || !binding.sessionId) return reply('先 /bot ses 绑定会话');
+          if (!binding || !binding.sessionId) return reply('先 /ses 绑定会话');
           const items = this.queueState.get(binding.sessionId) || [];
           return reply(items.length ? '队列：\n' + items.map((it, i) => `${i + 1}. ${it.text || it.id || JSON.stringify(it)}`).join('\n') : '队列为空');
         }
@@ -598,7 +584,7 @@ class ImBridge extends EventEmitter {
           return reply(lines.join('\n'));
         }
         default:
-          return reply('未知指令，/bot help 查看用法');
+          return reply('未知指令，/help 查看用法');
       }
     } catch (err) {
       reply(`❌ ${err.message}`);
