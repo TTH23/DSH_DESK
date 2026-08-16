@@ -138,12 +138,14 @@ function truncateText(s, max) {
 
 // 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知
 // 标题带对话名（便于区分不同对话），第二行显示回复内容开头（截断为单行）
+// 多窗口（主窗口 + 附加窗口）的 preload 各自检测到同一任务完成并发 IPC → 去重合并成一条（见 task-notify.js）
+const { createTaskNotifier } = require('./task-notify');
+const sendTaskNotification = createTaskNotifier((title, body) => notifyIf('task', title, body));
+
 ipcMain.on('dsh-desk:task-complete', (_event, data) => {
   const session = data && typeof data.session === 'string' && data.session.trim() ? data.session.trim() : '';
   const reply = data && typeof data.reply === 'string' && data.reply.trim() ? data.reply.trim() : '';
-  const title = session ? `任务完成「${truncateText(session, 20)}」` : '任务完成';
-  const body = truncateText(reply || 'DeepSeek Harness 已完成任务', 40);
-  notifyIf('task', title, body);
+  sendTaskNotification(session, reply);
 });
 
 // 托盘「通知 → 测试通知」：验证系统通知是否正常落地

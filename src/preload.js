@@ -661,7 +661,11 @@ function checkTaskState() {
   if (wasTaskRunning) {
     idleTicks++;
     if (idleTicks >= 2 && !hasQueuedMessages()) {
-      ipcRenderer.send('dsh-desk:task-complete', { session: sesKey, reply: lastReplyText() });
+      // 会话名解析为空（如加载中/附加窗口拿不到 crumb）时不发——
+      // 否则会发出"任务完成 + session ID"的垃圾通知；正常会话由能解析到的窗口发出
+      if (sesKey) {
+        ipcRenderer.send('dsh-desk:task-complete', { session: sesKey, reply: lastReplyText() });
+      }
       wasTaskRunning = false;
       idleTicks = 0;
     }

@@ -9,7 +9,8 @@
     "start": "node scripts/run-electron.js .",
     "gen:icon": "node scripts/gen-icon.mjs",
     "smoke": "node scripts/smoke.js",
-    "check": "node --check src/main.js && node --check src/dsh-manager.js && node --check src/tray.js && node --check src/preload.js && node --check src/usage.js",
+    "check": "node --check src/main.js && node --check src/dsh-manager.js && node --check src/tray.js && node --check src/preload.js && node --check src/usage.js && node --check src/task-notify.js",
+    "test": "node test/task-notify.test.js",
     "dist": "electron-builder --win",
     "dist:dir": "electron-builder --win --dir"
   },
