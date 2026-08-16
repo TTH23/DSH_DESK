@@ -137,11 +137,13 @@ function truncateText(s, max) {
 }
 
 // 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知
-// 第二行显示回复内容开头（截断为单行；取不到回复时回退到会话名）
+// 标题带对话名（便于区分不同对话），第二行显示回复内容开头（截断为单行）
 ipcMain.on('dsh-desk:task-complete', (_event, data) => {
   const session = data && typeof data.session === 'string' && data.session.trim() ? data.session.trim() : '';
   const reply = data && typeof data.reply === 'string' && data.reply.trim() ? data.reply.trim() : '';
-  notifyIf('task', '任务完成', truncateText(reply || session || 'DeepSeek Harness 已完成任务', 40));
+  const title = session ? `任务完成「${truncateText(session, 20)}」` : '任务完成';
+  const body = truncateText(reply || 'DeepSeek Harness 已完成任务', 40);
+  notifyIf('task', title, body);
 });
 
 // 托盘「通知 → 测试通知」：验证系统通知是否正常落地
