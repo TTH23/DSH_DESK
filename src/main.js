@@ -208,7 +208,7 @@ async function startImBridge() {
     notify: (title, body) => notify(title, body),
     // 任务完成系统通知与 preload 检测共用去重通道，避免同一任务弹两条
     onTaskComplete: (title, body) => sendTaskNotification(title, body),
-    // /bot setting idle <分钟> 等：修改全局配置并持久化
+    // /setting idle <分钟> 等：修改全局配置并持久化
     onConfigChange: async (patch) => {
       const cur = loadImConfig();
       const next = normalizeImConfig({ ...cur, ...patch });
