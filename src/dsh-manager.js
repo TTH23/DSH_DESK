@@ -146,6 +146,29 @@ function portFromUrl(url) {
   return m ? Number(m[1]) : null;
 }
 
+/** 从系统申请一个空闲端口（listen(0) 由 OS 分配，天然避开 Windows 排除端口范围） */
+function getFreePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on('error', () => resolve(null));
+    srv.listen(0, '127.0.0.1', () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+/** 预检某端口当前是否可绑定（被占用/被 Windows 排除都会失败） */
+function portUsable(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => srv.close(() => resolve(true)));
+  });
+}
+
 // ---------- 管理器 ----------
 class DshManager extends EventEmitter {
   /**
@@ -161,6 +184,7 @@ class DshManager extends EventEmitter {
       /* ignore */
     }
     this.logPath = path.join(this.logDir, `dsh-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
+    this.portFile = path.join(path.dirname(this.logDir), 'dsh-desk-port.json');
     this.state = 'stopped'; // stopped | starting | running | attached | failed
     this.url = null;
     this.port = DEFAULT_PORT;
@@ -198,6 +222,23 @@ class DshManager extends EventEmitter {
       /* ignore */
     }
     this.emit('log', { stream, text: String(text) });
+  }
+
+  /** 记住上次成功使用的端口（保持后续启动能附着到同一实例） */
+  _savePort(port) {
+    try {
+      fs.writeFileSync(this.portFile, JSON.stringify({ port }));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _loadPort() {
+    try {
+      return JSON.parse(fs.readFileSync(this.portFile, 'utf8')).port;
+    } catch {
+      return null;
+    }
   }
 
   _emitStage(token, key) {
@@ -253,26 +294,47 @@ class DshManager extends EventEmitter {
     const diag = this.getDiagnostics();
     this._logLine('info', `start requested; dshHome=${diag.dshHome} node=${diag.node} launcher=${diag.launcher} log=${diag.logPath}`);
 
-    // 1) 端口已有 DSH → 附着
-    const probe = await probeServer(DEFAULT_PORT);
-    if (token !== this._startToken) return null;
-    if (probe === 'dsh') {
-      this.state = 'attached';
-      this.url = `http://127.0.0.1:${DEFAULT_PORT}`;
-      this.port = DEFAULT_PORT;
-      this.startedByUs = false;
-      this._emitStage(token, 'ready');
-      this._logLine('info', `probe 127.0.0.1:${DEFAULT_PORT} => dsh; ATTACHED ${this.url}`);
-      this.emit('ready', { url: this.url, attached: true });
-      return this.url;
+    // 1) 依次探测「上次用过的端口」和默认 3080，有 DSH 则附着
+    const lastPort = this._loadPort();
+    const probePorts = [lastPort, DEFAULT_PORT].filter((p, i, a) => p && a.indexOf(p) === i);
+    const probeResults = {};
+    for (const p of probePorts) {
+      const r = await probeServer(p);
+      probeResults[p] = r;
+      if (r === 'dsh') {
+        this.state = 'attached';
+        this.url = `http://127.0.0.1:${p}`;
+        this.port = p;
+        this.startedByUs = false;
+        this._savePort(p);
+        this._emitStage(token, 'ready');
+        this._logLine('info', `probe 127.0.0.1:${p} => dsh; ATTACHED ${this.url}`);
+        this.emit('ready', { url: this.url, attached: true });
+        return this.url;
+      }
     }
+    if (token !== this._startToken) return null;
 
-    // 2) 3080 被其他程序占用 → 让系统分配端口；空闲 → 直接用 3080
-    const useAssignedPort = probe === 'other';
-    const port = useAssignedPort ? 0 : DEFAULT_PORT;
-    this._logLine('info', `probe 127.0.0.1:${DEFAULT_PORT} => ${probe}; spawning dsh (port=${useAssignedPort ? 'auto' : port})`);
+    // 2) 决定冷启动端口：优先「上次端口」→ 默认 3080 → 系统空闲端口（避开被占/Windows 排除）
+    let port = null;
+    if (lastPort && probeResults[lastPort] !== 'other' && (await portUsable(lastPort))) {
+      port = lastPort;
+    } else if (probeResults[DEFAULT_PORT] !== 'other' && (await portUsable(DEFAULT_PORT))) {
+      port = DEFAULT_PORT;
+    } else {
+      port = await getFreePort();
+    }
+    if (!port) {
+      this.state = 'failed';
+      this.emit('failed', {
+        code: 'NO_FREE_PORT',
+        message: `无法获得空闲端口启动 DSH 服务。\n日志：${this.logPath}`,
+      });
+      return null;
+    }
+    this._logLine('info', `probes=${JSON.stringify(probeResults)}; spawning dsh (port=${port})`);
 
-    const ok = this._spawn(token, port, useAssignedPort);
+    const ok = this._spawn(token, port, port !== DEFAULT_PORT);
     if (!ok) return null;
     return this.url;
   }
@@ -329,12 +391,22 @@ class DshManager extends EventEmitter {
           this.emit('stopped');
           return;
         }
-        // 固定端口失败 → 用自动端口重试一次
+        // 固定端口失败（被占用/被 Windows 排除）→ 申请真实空闲端口重试
         const rs = this._retryState;
         if (rs && rs.token === token && !rs.retried && !expectStdoutUrl) {
           rs.retried = true;
-          this._logLine('info', 'spawn on fixed port failed; retrying with OS-assigned port');
-          this._spawn(token, 0, true);
+          this._logLine('info', 'spawn on fixed port failed; picking a free port to retry');
+          getFreePort().then((port) => {
+            if (port && this._startToken === token) {
+              this._spawn(token, port, true);
+            } else {
+              this.state = 'failed';
+              this.emit('failed', {
+                code: 'NO_FREE_PORT',
+                message: `无法获得空闲端口启动 DSH 服务。\n日志：${this.logPath}`,
+              });
+            }
+          });
           return;
         }
         this.state = 'failed';
@@ -404,6 +476,7 @@ class DshManager extends EventEmitter {
     this.state = 'running';
     this.url = url;
     this.port = port;
+    this._savePort(port);
     this._emitStage(token, 'ready');
     this._logLine('info', `READY ${url} (pid=${this.childPid})`);
     this.emit('ready', { url, attached: false });
