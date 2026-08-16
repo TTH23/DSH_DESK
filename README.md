@@ -18,7 +18,7 @@ Windows 10 / 11 桌面程序：把 DeepSeek Harness 的启动**内嵌到程序�
 Get-FileHash .\DSH-Desk-v0.1.4-win32-x64.zip -Algorithm SHA256
 ```
 
-v0.1.4 校验值：`6b141668d66ee1e6b05495aa6491b4cb12ea5c503549318a7c1ca4ada8162e62`
+v0.1.4 校验值：`bbb9a5ae21348d19413c45a945bbdd00688e7f5fc9a53e6bdc697c67e78c8a02`
 
 ## 功能
 
