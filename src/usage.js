@@ -1,7 +1,7 @@
 'use strict';
 // DeepSeek 用量跟踪（主进程）：
 // - 余额：官方 Get User Balance 接口（GET https://api.deepseek.com/user/balance，Bearer API Key）
-// - 本次启动消费：按 Harness 会话存储中的实际用量 × 官方峰谷计价（仅本应用消耗，
+// - 本次启动消费：按 Harness 会话存储中的实际用量 × 现行峰谷计价（仅本应用消耗，
 //   不受同账户其他 API Key 影响）；"清零小计" = 把本次消费计数基线重置为当前值
 // - 会话文件：%DSH_HOME%/sessions/<encoded-cwd>/<session-id>/session.jsonl[.zstd]
 //   （zstd = 多帧拼接，每帧解压出 JSONL 行）
@@ -16,12 +16,7 @@ const { zstdDecompressSync } = require('node:zlib');
 const BALANCE_URL = 'https://api.deepseek.com/user/balance';
 
 // ========== 计价 ==========
-// 旧价（2026-08-17 00:00 北京时间之前的事件使用）
-const PRICING_V1 = {
-  'deepseek-v4-flash': { hit: 0.02, miss: 1, out: 2 },
-  'deepseek-v4-pro': { hit: 0.025, miss: 3, out: 6 },
-};
-// 新价（2026-08-17 00:00 北京时间 = 08-16 16:00 UTC 生效）：峰谷定价，元/百万 tokens
+// 现行价（2026-08-17 00:00 北京时间起生效）：峰谷定价，元/百万 tokens
 // 高峰时段（北京时间）：9:00–12:00、14:00–18:00；空闲时段为高峰的一半
 const PRICING_V2 = {
   'deepseek-v4-flash': {
@@ -34,8 +29,6 @@ const PRICING_V2 = {
   },
 };
 const DEFAULT_MODEL = 'deepseek-v4-flash';
-// 新价生效时刻：2026-08-17 00:00 北京时间
-const PRICING_V2_TS = Date.UTC(2026, 7, 16, 16, 0, 0);
 
 function dshHome() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -53,20 +46,37 @@ function modelKey(model) {
   return DEFAULT_MODEL; // flash 与未知模型均按 flash 计
 }
 
-/** 单次用量事件费用（元）。usage: { inputTokens(未命中), cacheReadTokens(命中), outputTokens(输出) }
- * 按事件发生时间选择计价版本：2026-08-17 00:00（北京时间）之前用旧价，之后用峰谷新价 */
+/** 单次用量事件费用（元）。usage: { inputTokens(未命中), cacheReadTokens(命中), cacheWriteTokens(缓存写入), outputTokens(输出) }
+ * 统一按现行峰谷价计（2026-08-17 00:00 北京时间起生效）。
+ * 计费口径与 dsh-session-cost 插件一致：缓存写入按「未命中」单价计（对应官方 prompt_cache_miss_tokens）。 */
 function costOfUsage(usage, model, ts) {
-  const miss = (usage.inputTokens || 0) / 1e6;
+  const miss = ((usage.inputTokens || 0) + (usage.cacheWriteTokens || 0)) / 1e6;
   const hit = (usage.cacheReadTokens || 0) / 1e6;
   const out = (usage.outputTokens || 0) / 1e6;
   const modelFamily = modelKey(model);
-  if (ts < PRICING_V2_TS) {
-    const v1 = PRICING_V1[modelFamily];
-    return miss * v1.miss + hit * v1.hit + out * v1.out;
-  }
   const table = PRICING_V2[modelFamily];
   const p = isPeak(ts) ? table.peak : table.offpeak;
   return miss * p.miss + hit * p.hit + out * p.out;
+}
+
+/** 会话累计费用（元）：与 dsh-session-cost 插件 computeCost 同口径，
+ * 输入为 tokenUsage 投影 { uncachedInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens }。
+ * 结果 = (未命中 + 写入) × miss + 命中 × hit + 输出 × out。
+ * @returns {{ total: number, hit: number, miss: number, out: number }} 各部分费用（元）
+ */
+function costOfProjection(tu, model, ts) {
+  const hit = ((tu && tu.cacheReadTokens) || 0) / 1e6;
+  const miss = (((tu && tu.uncachedInputTokens) || 0) + ((tu && tu.cacheWriteTokens) || 0)) / 1e6;
+  const out = ((tu && tu.outputTokens) || 0) / 1e6;
+  const modelFamily = modelKey(model);
+  const table = PRICING_V2[modelFamily];
+  const p = isPeak(ts) ? table.peak : table.offpeak;
+  return {
+    total: hit * p.hit + miss * p.miss + out * p.out,
+    hit: hit * p.hit,
+    miss: miss * p.miss,
+    out: out * p.out,
+  };
 }
 
 // ========== 会话存储读取 ==========
@@ -350,4 +360,4 @@ function fetchBalance() {
   });
 }
 
-module.exports = { UsageTracker, fetchBalance, readApiKey, costOfUsage, isPeak, PRICING_V1, PRICING_V2, PRICING_V2_TS };
+module.exports = { UsageTracker, fetchBalance, readApiKey, costOfUsage, costOfProjection, isPeak, PRICING_V2 };

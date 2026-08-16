@@ -37,6 +37,9 @@ const STATE_ICON = {
  * @param {() => void} opts.onStop
  * @param {() => void} opts.onRestart
  * @param {() => void} opts.onOpenLogs
+ * @param {() => object} [opts.getIm] 机器人状态（{config, running, adapters, boundChannels}）
+ * @param {(enabled: boolean) => void} [opts.onToggleIm]
+ * @param {() => void} [opts.onOpenImConfig]
  * @param {() => void} opts.onQuit
  * @returns {{ tray: Tray, refresh: () => void }}
  */
@@ -62,7 +65,7 @@ function createTray(opts) {
       items.push({ label: truncate(`用量失败：${u.error}`), enabled: false });
     } else {
       items.push({ label: `余额 ¥${fmt(u.balance)}`, enabled: false });
-      items.push({ label: `本次消费 -¥${fmt(u.spent)}`, enabled: false });
+      items.push({ label: `本次启动消费 -¥${fmt(u.spent)}`, enabled: false });
     }
     items.push({ type: 'separator' });
     items.push({ label: '刷新用量', click: opts.onRefreshUsage });
@@ -102,8 +105,39 @@ function createTray(opts) {
     if (u.error) return [{ label: truncate(`用量失败：${u.error}`), enabled: false }];
     return [
       { label: `¥${fmt(u.balance)}`, enabled: false },
-      { label: `-¥${fmt(u.spent)}`, enabled: false },
+      { label: `-¥${fmt(u.spent)}（启动后）`, enabled: false },
     ];
+  }
+
+  // QQ 机器人桥接（OneBot v11）
+  function imMenu() {
+    if (typeof opts.getIm !== 'function') return [];
+    const im = opts.getIm() || {};
+    const cfg = im.config || {};
+    const ob = cfg.onebot || {};
+    const enabled = Boolean(cfg.enabled);
+    const conn = (im.adapters || [])[0];
+    const items = [
+      { label: enabled ? '机器人：已开启' : '机器人：已关闭', enabled: false },
+    ];
+    if (enabled) {
+      items.push({
+        label: conn && conn.connected ? `连接：已连接${conn.botUin ? `（${conn.botUin}）` : ''}` : '连接：未连接（等待 go-cqhttp…）',
+        enabled: false,
+      });
+      items.push({ label: `已绑定频道：${im.boundChannels || 0}`, enabled: false });
+      if (ob.allowUsers && ob.allowUsers.length) items.push({ label: `白名单 QQ：${ob.allowUsers.join('、')}`, enabled: false });
+      if (ob.allowGroups && ob.allowGroups.length) items.push({ label: `白名单群：${ob.allowGroups.join('、')}`, enabled: false });
+    }
+    items.push({ type: 'separator' });
+    items.push({
+      label: enabled ? '关闭机器人' : '开启机器人',
+      click: () => opts.onToggleIm(!enabled),
+    });
+    if (typeof opts.onOpenImConfig === 'function') {
+      items.push({ label: '配置…', click: opts.onOpenImConfig });
+    }
+    return items;
   }
 
   function buildMenu() {
@@ -132,6 +166,7 @@ function createTray(opts) {
         ],
       },
       { label: '用量', submenu: usageMenu() },
+      { label: '机器人', submenu: imMenu() },
       { label: '通知', submenu: notificationMenu() },
       { type: 'separator' },
       {
@@ -142,6 +177,7 @@ function createTray(opts) {
       },
       { label: '查看日志', click: opts.onOpenLogs },
       { type: 'separator' },
+      { label: '重启', click: opts.onAppRestart },
       { label: '退出', click: opts.onQuit },
     ]);
   }

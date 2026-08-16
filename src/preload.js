@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld('dshDesk', {
     ipcRenderer.on('dsh-desk:event', (_event, data) => callback(data));
   },
   getTheme: () => ipcRenderer.invoke('dsh-desk:theme-get'),
+  im: {
+    getConfig: () => ipcRenderer.invoke('im-get-config'),
+    setConfig: (config) => ipcRenderer.invoke('im-set-config', config),
+    status: () => ipcRenderer.invoke('im-status'),
+    close: () => ipcRenderer.invoke('im-close-config'),
+  },
 });
 
 // preload 隔离世界内直接用 ipcRenderer（window.dshDesk 只存在于页面世界）

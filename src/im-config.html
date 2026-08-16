@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH Desk 机器人配置</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: #d7e3f4;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; font-size: 13px;
+    background: radial-gradient(1200px 600px at 50% -10%, #10223f 0%, #0b0d12 60%);
+    min-height: 100vh;
+  }
+  .wrap { padding: 18px 20px 20px; }
+  h1 { font-size: 15px; margin: 0 0 14px; font-weight: 600; letter-spacing: .3px; }
+  label { display: block; color: #7f92ab; margin: 12px 0 5px; font-size: 12px; }
+  input {
+    width: 100%; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid rgba(215, 227, 244, .16); background: rgba(13, 17, 23, .7);
+    color: #e6eefb; outline: none; font-size: 13px;
+  }
+  input:focus { border-color: #4da3ff; box-shadow: 0 0 0 2px rgba(77, 163, 255, .18); }
+  .secret { position: relative; }
+  .secret input { padding-right: 56px; }
+  .secret .eye {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: #7f92ab; cursor: pointer; font-size: 11px; padding: 4px 8px;
+  }
+  .secret .eye:hover { color: #4da3ff; }
+  .hint { color: #5c6b84; font-size: 11px; margin-top: 5px; line-height: 1.6; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; min-width: 0; }
+  .sw { display: flex; align-items: center; gap: 9px; margin: 4px 0; }
+  .sw input { width: auto; }
+  .sw label { margin: 0; font-size: 13px; color: #c3d0e4; }
+  .mode { display: flex; gap: 10px; margin: 12px 0 4px; }
+  .mode label {
+    margin: 0; padding: 9px 12px; border-radius: 9px; cursor: pointer; font-size: 13px;
+    border: 1px solid rgba(215, 227, 244, .16); color: #c3d0e4; flex: 1; text-align: center;
+    background: rgba(13, 17, 23, .4); transition: border-color .15s, color .15s;
+  }
+  .mode label:hover { border-color: rgba(77, 163, 255, .5); }
+  .mode label.on { border-color: #4da3ff; color: #4da3ff; background: rgba(77, 163, 255, .08); }
+  .mode input { display: none; }
+  .group { display: none; }
+  .group.show { display: block; }
+  .actions { display: flex; gap: 10px; margin-top: 20px; }
+  button {
+    flex: 1; padding: 10px; border-radius: 9px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600;
+  }
+  #save { background: linear-gradient(90deg, #167af2, #4da3ff); color: #fff; }
+  #save:hover { filter: brightness(1.1); }
+  #cancel { background: rgba(215, 227, 244, .08); color: #c3d0e4; }
+  #cancel:hover { background: rgba(215, 227, 244, .14); }
+  #status { min-height: 16px; color: #34d399; font-size: 12px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>QQ 机器人配置</h1>
+
+<div class="sw">
+  <input type="checkbox" id="enabled">
+  <label for="enabled">启用 QQ 机器人</label>
+</div>
+<div class="sw">
+  <input type="checkbox" id="autoStart">
+  <label for="autoStart">随 DSH Desk 启动自动开启</label>
+</div>
+
+<div class="mode">
+  <label id="modeOfficial"><input type="radio" name="mode" value="official">官方机器人（AppID/AppSecret）</label>
+  <label id="modeOnebot"><input type="radio" name="mode" value="onebot">OneBot（go-cqhttp/NapCat）</label>
+</div>
+
+<div class="group" id="grpOfficial">
+  <label for="appId">AppID</label>
+  <input id="appId" placeholder="QQ 开放平台的 AppID">
+  <label for="appSecret">AppSecret</label>
+  <div class="secret">
+    <input id="appSecret" type="password" placeholder="AppSecret" autocomplete="off">
+    <button class="eye" id="toggleSecret" type="button">显示</button>
+  </div>
+  <div class="hint">在 QQ 开放平台（q.qq.com）创建机器人应用后获取；程序用 AppID+AppSecret 自动换取 access_token。</div>
+  <div class="sw" style="margin-top:8px">
+    <input type="checkbox" id="sandbox">
+    <label for="sandbox">沙箱模式（测试环境）</label>
+  </div>
+  <label for="ofUsers">允许的 user_openid（单聊，逗号分隔，可选）</label>
+  <input id="ofUsers" placeholder="留空 = 允许所有能联系到机器人的用户">
+  <label for="ofGroups">允许的 group_openid（群聊，需 @机器人，逗号分隔，可选）</label>
+  <input id="ofGroups" placeholder="留空 = 允许所有群">
+  <div class="hint">白名单可选；未命中时只通知主机不回复。官方模式的「服务器 IP 白名单」与 WebSocket 模式无关，不用填。</div>
+</div>
+
+<div class="group" id="grpOnebot">
+  <label for="wsUrl">OneBot WebSocket 地址</label>
+  <input id="wsUrl" placeholder="ws://127.0.0.1:6700">
+  <div class="hint">go-cqhttp / NapCat / LLOneBot 的 WebSocket 服务地址（正向 WS）</div>
+  <label for="accessToken">访问令牌（可选）</label>
+  <input id="accessToken" placeholder="留空则不用令牌">
+  <div class="row">
+    <div>
+      <label for="allowUsers">允许的 QQ 号（私聊，逗号分隔）</label>
+      <input id="allowUsers" placeholder="如 10001,10002">
+    </div>
+    <div>
+      <label for="allowGroups">允许的群号（群聊需 @机器人，逗号分隔）</label>
+      <input id="allowGroups" placeholder="如 888888">
+    </div>
+  </div>
+  <div class="hint">白名单至少填一项，否则机器人不会启动（安全必需）。</div>
+</div>
+
+<label for="idleMinutes">闲置自动退出（分钟）</label>
+<input id="idleMinutes" type="number" min="0" step="5" placeholder="30">
+<div class="hint">频道无对话超过该时长自动清空工作区/会话绑定，下次需重新选择。填 0 = 不自动退出。</div>
+
+<label for="notifyMode">非 QQ 任务完成推送</label>
+<select id="notifyMode" style="width:100%;padding:9px 12px;border-radius:8px;border:1px solid rgba(215,227,244,.16);background:rgba(13,17,23,.7);color:#e6eefb;font-size:13px;outline:none">
+  <option value="full">全文推送</option>
+  <option value="brief">短固定提醒</option>
+  <option value="none">不提醒</option>
+</select>
+<div class="hint">在软件（非 QQ）里发起的任务完成后，是否通过 QQ 推送结果：全文 / 只发完成提醒 / 不推。</div>
+
+<label for="passcode">访问口令（可选，两种模式通用）</label>
+<input id="passcode" placeholder="留空则无需口令">
+<div class="hint">设置后，频道首次发送口令才能解锁对话。</div>
+
+<div id="status"></div>
+
+<div class="actions">
+  <button id="cancel">取消</button>
+  <button id="save">保存</button>
+</div>
+</div>
+
+<script>
+(async function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var im = window.dshDesk.im;
+  var cfg = null;
+  try {
+    cfg = await im.getConfig();
+  } catch (e) {
+    $('status').textContent = '读取配置失败：' + e.message;
+    return;
+  }
+  var mode = (cfg && cfg.mode === 'onebot') ? 'onebot' : 'official';
+  var ob = (cfg && cfg.onebot) || {};
+  var of = (cfg && cfg.official) || {};
+
+  $('enabled').checked = Boolean(cfg && cfg.enabled);
+  $('autoStart').checked = cfg && cfg.autoStart !== undefined ? Boolean(cfg.autoStart) : true;
+  $('idleMinutes').value = cfg && cfg.idleMinutes !== undefined ? cfg.idleMinutes : 30;
+  $('notifyMode').value = cfg && ['full', 'brief', 'none'].includes(cfg.notifyMode) ? cfg.notifyMode : 'full';
+  $('passcode').value = (cfg && cfg.passcode) || '';
+
+  // AppSecret 加密显示：默认隐藏，点「显示」切换明文
+  $('toggleSecret').addEventListener('click', function () {
+    var el = $('appSecret');
+    var show = el.type === 'password';
+    el.type = show ? 'text' : 'password';
+    this.textContent = show ? '隐藏' : '显示';
+  });
+
+  function showMode(m) {
+    var official = m === 'official';
+    document.querySelector('input[name="mode"][value="official"]').checked = official;
+    document.querySelector('input[name="mode"][value="onebot"]').checked = !official;
+    $('modeOfficial').classList.toggle('on', official);
+    $('modeOnebot').classList.toggle('on', !official);
+    $('grpOfficial').classList.toggle('show', official);
+    $('grpOnebot').classList.toggle('show', !official);
+  }
+  document.querySelectorAll('input[name="mode"]').forEach(function (r) {
+    r.addEventListener('change', function () { showMode(this.value); });
+  });
+  function currentMode() {
+    var r = document.querySelector('input[name="mode"]:checked');
+    return r ? r.value : 'official';
+  }
+
+  // 官方
+  $('appId').value = of.appId || '';
+  $('appSecret').value = of.appSecret || '';
+  $('sandbox').checked = Boolean(of.sandbox);
+  $('ofUsers').value = (of.allowUsers || []).join(',');
+  $('ofGroups').value = (of.allowGroups || []).join(',');
+  // OneBot
+  $('wsUrl').value = ob.wsUrl || '';
+  $('accessToken').value = ob.accessToken || '';
+  $('allowUsers').value = (ob.allowUsers || []).join(',');
+  $('allowGroups').value = (ob.allowGroups || []).join(',');
+  showMode(mode);
+
+  function parseNums(s) {
+    return s.split(/[,，\s]+/).map(function (x) { return Number(x.trim()); }).filter(function (n) { return Number.isFinite(n) && n > 0; });
+  }
+  function parseStrs(s) {
+    return s.split(/[,，\s]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+
+  $('save').addEventListener('click', async function () {
+    var m = currentMode();
+    var next = {
+      enabled: $('enabled').checked,
+      autoStart: $('autoStart').checked,
+      idleMinutes: Math.max(0, parseInt($('idleMinutes').value, 10) || 0),
+      notifyMode: ['full', 'brief', 'none'].includes($('notifyMode').value) ? $('notifyMode').value : 'full',
+      mode: m,
+      passcode: $('passcode').value.trim(),
+      onebot: {
+        wsUrl: $('wsUrl').value.trim() || 'ws://127.0.0.1:6700',
+        accessToken: $('accessToken').value.trim(),
+        allowUsers: parseNums($('allowUsers').value),
+        allowGroups: parseNums($('allowGroups').value),
+      },
+      official: {
+        appId: $('appId').value.trim(),
+        appSecret: $('appSecret').value.trim(),
+        sandbox: $('sandbox').checked,
+        allowUsers: parseStrs($('ofUsers').value),
+        allowGroups: parseStrs($('ofGroups').value),
+      },
+    };
+    if (next.enabled) {
+      if (m === 'official' && (!next.official.appId || !next.official.appSecret)) {
+        $('status').textContent = '⚠ 官方机器人模式需要 AppID 和 AppSecret';
+        $('status').style.color = '#f87171';
+        return;
+      }
+      if (m === 'onebot' && next.onebot.allowUsers.length === 0 && next.onebot.allowGroups.length === 0) {
+        $('status').textContent = '⚠ OneBot 必须配置至少一个白名单（QQ 号或群号）';
+        $('status').style.color = '#f87171';
+        return;
+      }
+    }
+    try {
+      await im.setConfig(next);
+      $('status').textContent = '✅ 已保存';
+      $('status').style.color = '#34d399';
+      setTimeout(function () { im.close(); }, 500);
+    } catch (e) {
+      $('status').textContent = '保存失败：' + e.message;
+      $('status').style.color = '#f87171';
+    }
+  });
+
+  $('cancel').addEventListener('click', function () { im.close(); });
+})();
+</script>
+</body>
+</html>

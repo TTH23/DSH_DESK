@@ -10,15 +10,15 @@ Windows 10 / 11 桌面程序：把 DeepSeek Harness 的启动**内嵌到程序�
 
 | 文件 | 说明 |
 |---|---|
-| `DSH-Desk-v0.1.3-win32-x64.zip` | 免安装便携版：解压后双击 `DSH Desk.exe` 即可运行，**无需安装 Node.js** |
+| `DSH-Desk-v0.1.4-win32-x64.zip` | 免安装便携版：解压后双击 `DSH Desk.exe` 即可运行，**无需安装 Node.js** |
 
 **SHA-256 校验**（与 release 中的 `*.sha256` 文件一致，防止下载损坏/被篡改）：
 
 ```powershell
-Get-FileHash .\DSH-Desk-v0.1.3-win32-x64.zip -Algorithm SHA256
+Get-FileHash .\DSH-Desk-v0.1.4-win32-x64.zip -Algorithm SHA256
 ```
 
-v0.1.3 校验值：`707fcf3e3c299b36b527d9b40ced3f3144da23237ca0cdf922d1540426ba0e4b`
+v0.1.4 校验值：`6b141668d66ee1e6b05495aa6491b4cb12ea5c503549318a7c1ca4ada8162e62`
 
 ## 功能
 
@@ -44,9 +44,12 @@ v0.1.3 校验值：`707fcf3e3c299b36b527d9b40ced3f3144da23237ca0cdf922d1540426ba
     （高峰=北京时间 9-12、14-18，空闲为高峰一半，模型 deepseek-v4-flash / deepseek-v4-pro）。
   - 消费金额与平台网页按 key 的口径可能存在缓存计费与四舍五入的分毫级差异，仅供参考。
 - 🔔 **系统通知**：任务完成 / 启动成功 / 出错三类通知，托盘「通知」菜单可单独开关；
-  排队/插话队列挂起时不发"任务完成"通知
+  排队/插话队列挂起时不发"任务完成"通知；任务完成通知标题带对话名
 - 🎯 **托盘状态图标**：在线=右下角绿点、出错=红点、服务不在线/端口占用=图标灰化；
-  托盘右键改为二级菜单（服务 / 用量 / 通知），信息不再分散
+  托盘右键改为二级菜单（服务 / 用量 / 机器人 / 通知），信息不再分散
+- 🤖 **QQ 机器人远程控制**（OneBot v11）：接 go-cqhttp / NapCat / LLOneBot，
+  手机上远程对话、选择工作区/会话/模型、查用量与聊天记录、任务完成推送、排队与打断。
+  详见「QQ 机器人」章节
 
 ## 运行环境
 
@@ -75,6 +78,56 @@ v0.1.3 校验值：`707fcf3e3c299b36b527d9b40ced3f3144da23237ca0cdf922d1540426ba
 > 首次启动 DSH 服务会初始化 profile，界面加载需要几秒到几十秒。
 > 等待期间窗口显示**真实进度条**（由真实事件驱动：进程启动 → 配置写入 →
 > 端口监听 → 界面就绪，只前进不后退、不伪造百分比）+ **实时日志尾流** + 已等待计时。
+
+## QQ 机器人（OneBot v11）
+
+用 QQ 远程操控 DSH：发消息对话、执行 dsh 斜杠命令（/plan /goal 等）、
+选择工作区/会话/模型、查用量与聊天记录、接收任务完成推送，支持排队与打断。
+
+### 接入步骤（二选一）
+
+**方式 A：QQ 官方机器人（AppID/AppSecret，推荐）**——无需第三方客户端
+1. 在 [QQ 开放平台](https://q.qq.com) 创建机器人应用，启用「C2C 单聊」与「群聊 @消息」能力（C2C 需申请开通）。
+2. 拿到 **AppID** 与 **AppSecret**（没有静态 Token：程序用二者自动换取 access_token，2 小时有效自动续）。
+3. DSH Desk 托盘 → **机器人 → 配置…** → 选「官方机器人」：填 AppID/AppSecret，可勾选沙箱模式，
+   白名单（user_openid/group_openid）**可选**（留空=允许所有能联系到机器人的用户；填了则未命中只通知主机）。
+   「服务器 IP 白名单」与 WebSocket 模式无关，无需配置。
+4. 测试：先在**沙箱**里跑通（在开放平台把「开发体验号码」加为测试用户），再切正式环境。
+
+**方式 B：OneBot（go-cqhttp / NapCat / LLOneBot）**——任意 QQ 号私聊+群聊
+1. 部署一个 OneBot v11 实现并登录机器人，开启 **WebSocket 服务**（正向 WS），
+   记下地址（默认 `ws://127.0.0.1:6700`）与访问令牌（如有）。
+2. 配置… → 选「OneBot」：填 WS 地址、令牌，**白名单必填**（QQ 号/群号）。
+3. 未配置白名单时机器人拒绝启动（安全必需）。
+
+### 指令
+
+> **首次使用**：新频道（未绑定、未欢迎过）发第一条消息会收到**自动欢迎**（简介 + 快速开始）。
+> 之后未绑定时回简短提示；已绑定后普通文本即对话。任何状态下机器人都有自动回复。
+
+| 输入 | 行为 |
+|---|---|
+| 普通文本 | 发给当前绑定会话（忙时自动排队） |
+| `/plan …` `/goal …` 等 | **原样透传**为 dsh 斜杠命令执行 |
+| `/bot help` | 完整帮助（快速开始 / dsh 斜杠命令 / 指令表 / 说明） |
+| `/bot ws` / `/bot ses` | 列工作区/会话并选择绑定。**官方机器人模式下列表自带可点击按钮**（点按钮即选择）；也支持 `/bot ws <名>`、`/bot ses <名或ID前缀>` 打字选择。`/bot ses` 只列当前工作区自己的会话 |
+| `/bot model` / `/bot model <provider>/<model>` | 模型列表 / 选择 |
+| `/bot usage` | 余额 + 本次消费 |
+| `/bot history [n]` | 最近 n 条聊天记录 |
+| `/bot mode 纯对话\|全部` | 回复/历史渲染模式（纯对话=仅文本；全部=含工具/思考） |
+| `/bot stop` | 打断当前生成（队列中未开始的会自动继续） |
+| `/bot queue` | 当前排队状态 |
+| `/bot status` | 桥接/dsh 状态 |
+
+### 安全
+
+- **白名单必需**：只响应配置的 QQ 号/群；可选手令解锁。
+- 智能体可执行工具（bash 等），机器人等于远程终端——只绑可信账号，用完可关。
+- 回复按 QQ 单条上限自动分段；超长截断提示用 `/bot history` 看完整。
+
+## 致谢
+
+- **ChengChe106**：计费口径与价格表参考其开源项目 **dsh-session-cost**（会话费用估算插件），特此鸣谢。
 
 ## 从源码运行（开发者）
 
@@ -138,11 +191,25 @@ DSH 子进程输出与程序运行日志保存在：
 ```
 DSH_DESK/
 ├── src/
-│   ├── main.js          # Electron 主进程：窗口、托盘、自启、生命周期
+│   ├── main.js          # Electron 主进程：窗口、托盘、自启、生命周期、机器人桥接接线
 │   ├── dsh-manager.js   # DSH 服务管理器：隐藏启动/附着/重启/关停 + 阶段进度事件
-│   ├── tray.js          # 托盘图标与右键菜单
+│   ├── tray.js          # 托盘图标与右键菜单（服务/用量/机器人/通知）
 │   ├── preload.js       # 加载页事件桥（stage/log/ready/failed → 渲染进程）
+│   ├── im-config.html   # 机器人配置小窗口
+│   ├── im/
+│   │   ├── dsh-api.js        # dsh 本地 RPC 客户端（unary + mux WS 事件流）
+│   │   ├── bridge.js         # 桥接核心：消息分发 / 命令透传 / 排队 / 打断 / 任务完成推送
+│   │   ├── session-mapper.js # IM 频道 ↔ 工作区/会话 绑定（持久化）
+│   │   ├── render.js         # 会话事件 → QQ 文本渲染（纯对话/全部）
+│   │   └── adapters/
+│   │       ├── onebot.js     # OneBot v11 适配器（WS 客户端，白名单 + @过滤）
+│   │       └── qq-official.js# QQ 官方机器人适配器（AppID/AppSecret/Token，官方网关直连）
 │   └── loading.html     # 启动进度页（真实阶段进度条 + 日志尾流 + 计时）
+├── test/
+│   ├── im-dsh-api.test.js      # dsh RPC 客户端（mock dsh 协议）
+│   ├── im-render-mapper.test.js# 渲染 + 绑定持久化
+│   ├── im-bridge.test.js       # 桥接集成（mock OneBot + mock dsh）
+│   └── im-qq-official.test.js  # 官方机器人适配器（mock 网关 + mock API）
 ├── scripts/
 │   ├── gen-icon.mjs     # 图标生成（纯 Node，零依赖）
 │   ├── smoke.js         # 环境自检（npm run smoke）

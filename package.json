@@ -1,7 +1,7 @@
 {
   "name": "dsh-desk",
   "productName": "DSH Desk",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "DeepSeek Harness 桌面托盘程序：内嵌启动 dsh web、无命令行窗口、最小化到系统托盘",
   "main": "src/main.js",
   "private": true,
@@ -9,8 +9,8 @@
     "start": "node scripts/run-electron.js .",
     "gen:icon": "node scripts/gen-icon.mjs",
     "smoke": "node scripts/smoke.js",
-    "check": "node --check src/main.js && node --check src/dsh-manager.js && node --check src/tray.js && node --check src/preload.js && node --check src/usage.js && node --check src/task-notify.js",
-    "test": "node test/task-notify.test.js",
+    "check": "node --check src/main.js && node --check src/dsh-manager.js && node --check src/tray.js && node --check src/preload.js && node --check src/usage.js && node --check src/task-notify.js && node --check src/im/dsh-api.js && node --check src/im/render.js && node --check src/im/session-mapper.js && node --check src/im/bridge.js && node --check src/im/help.js && node --check src/im/adapters/onebot.js && node --check src/im/adapters/qq-official.js",
+    "test": "node test/im-dsh-api.test.js && node test/im-render-mapper.test.js && node test/im-bridge.test.js && node test/im-qq-official.test.js && node test/task-notify.test.js && node test/usage.test.js",
     "dist": "electron-builder --win",
     "dist:dir": "electron-builder --win --dir"
   },

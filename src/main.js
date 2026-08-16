@@ -9,6 +9,11 @@ const { execFile, spawn } = require('node:child_process');
 const { DshManager } = require('./dsh-manager');
 const { UsageTracker } = require('./usage');
 const { createTray } = require('./tray');
+const { DshApiClient } = require('./im/dsh-api');
+const { SessionMapper } = require('./im/session-mapper');
+const { ImBridge } = require('./im/bridge');
+const { OneBotAdapter } = require('./im/adapters/onebot');
+const { QqOfficialAdapter } = require('./im/adapters/qq-official');
 
 const APP_DIR = path.join(__dirname, '..');
 const ICON_PATH = path.join(APP_DIR, 'assets', 'icon.png');
@@ -25,6 +30,22 @@ const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 // 设置 Windows AppUserModelID：任务栏右键菜单/分组按此显示应用名，避免显示成 "Electron"
 app.setAppUserModelId('com.dshdesk.app');
 
+// 桥接诊断：捕获未处理异常/拒绝（避免静默失败，写入 im-bridge.log）
+process.on('uncaughtException', (err) => {
+  try {
+    logIm('uncaughtException: ' + ((err && err.stack) || err));
+  } catch {
+    /* ignore */
+  }
+});
+process.on('unhandledRejection', (reason) => {
+  try {
+    logIm('unhandledRejection: ' + ((reason && reason.stack) || reason));
+  } catch {
+    /* ignore */
+  }
+});
+
 let mainWindow = null; // 主窗口：托盘开关、加载进度页、错误弹窗使用
 let trayCtl = null;
 let manager = null;
@@ -32,6 +53,286 @@ let usage = null; // DeepSeek 用量跟踪（余额 + 本次启动消费）
 let isQuitting = false;
 let autoStartEnabled = false;
 const windows = new Set(); // 所有窗口（含主窗口），用于多窗口管理
+
+// ---------- QQ 机器人桥接（OneBot v11 / 官方机器人） ----------
+let imStore = null; // { config, mapper, bridge, configWin }
+const IM_DEFAULT_CONFIG = {
+  enabled: false,
+  autoStart: true, // 随 DSH Desk 启动自动开启机器人
+  idleMinutes: 30, // 闲置自动退出（分钟）：无对话超过该时长自动清空绑定，需重新选择；0=不退出
+  notifyMode: 'full', // 非 QQ 发起的任务完成推送：full=全文推送 | brief=短固定提醒 | none=不提醒
+  mode: 'official', // 'official'（AppID/AppSecret/Token 直连）| 'onebot'（go-cqhttp/NapCat）
+  passcode: '',
+  onebot: { wsUrl: 'ws://127.0.0.1:6700', accessToken: '', allowUsers: [], allowGroups: [] },
+  official: { appId: '', appSecret: '', sandbox: false, allowUsers: [], allowGroups: [] },
+};
+
+function imDir() {
+  return path.join(app.getPath('userData'), 'im');
+}
+
+// 桥接诊断日志（logs/im-bridge.log）
+function logIm(line) {
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, 'im-bridge.log'), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
+function imConfigFile() {
+  return path.join(imDir(), 'config.json');
+}
+
+function normalizeImConfig(c) {
+  const src = c && typeof c === 'object' ? c : {};
+  const o = src.onebot && typeof src.onebot === 'object' ? src.onebot : {};
+  const f = src.official && typeof src.official === 'object' ? src.official : {};
+  const nums = (v) => (Array.isArray(v) ? v.map(Number).filter((n) => Number.isFinite(n)) : []);
+  const strs = (v) => (Array.isArray(v) ? v.map(String).filter((s) => s.trim() !== '') : []);
+  // 兼容旧结构：passcode 曾在 onebot 下
+  const legacyPasscode = typeof o.passcode === 'string' ? o.passcode : '';
+  return {
+    enabled: Boolean(src.enabled),
+    autoStart: src.autoStart === undefined ? IM_DEFAULT_CONFIG.autoStart : Boolean(src.autoStart),
+    idleMinutes: (() => {
+      const n = Number(src.idleMinutes);
+      return Number.isFinite(n) && n >= 0 ? n : IM_DEFAULT_CONFIG.idleMinutes;
+    })(),
+    notifyMode: ['full', 'brief', 'none'].includes(src.notifyMode) ? src.notifyMode : IM_DEFAULT_CONFIG.notifyMode,
+    mode: src.mode === 'onebot' ? 'onebot' : 'official',
+    passcode: typeof src.passcode === 'string' ? src.passcode : legacyPasscode,
+    onebot: {
+      wsUrl: typeof o.wsUrl === 'string' ? o.wsUrl : IM_DEFAULT_CONFIG.onebot.wsUrl,
+      accessToken: typeof o.accessToken === 'string' ? o.accessToken : '',
+      allowUsers: nums(o.allowUsers),
+      allowGroups: nums(o.allowGroups),
+    },
+    official: {
+      appId: typeof f.appId === 'string' ? f.appId : '',
+      appSecret: typeof f.appSecret === 'string' ? f.appSecret : '',
+      sandbox: Boolean(f.sandbox),
+      allowUsers: strs(f.allowUsers),
+      allowGroups: strs(f.allowGroups),
+    },
+  };
+}
+
+function loadImConfig() {
+  try {
+    return normalizeImConfig(JSON.parse(fs.readFileSync(imConfigFile(), 'utf8')));
+  } catch {
+    return normalizeImConfig(null);
+  }
+}
+
+function saveImConfig(config) {
+  try {
+    fs.mkdirSync(imDir(), { recursive: true });
+    fs.writeFileSync(imConfigFile(), JSON.stringify(normalizeImConfig(config), null, 2));
+  } catch {
+    /* ignore */
+  }
+}
+
+function imStatus() {
+  const cfg = imStore ? imStore.config : loadImConfig();
+  const b = imStore && imStore.bridge ? imStore.bridge.status() : null;
+  return {
+    config: cfg,
+    running: Boolean(b && b.running),
+    adapters: b ? b.adapters : [],
+    boundChannels: b ? b.boundChannels : 0,
+  };
+}
+
+function broadcastImState() {
+  const state = imStatus();
+  for (const win of windows) {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send('dsh-desk:im-sync', state);
+    }
+  }
+}
+
+async function startImBridge() {
+  if (!imStore || imStore.bridge) {
+    logIm(`startImBridge skipped (imStore=${Boolean(imStore)}, bridge=${Boolean(imStore && imStore.bridge)})`);
+    return;
+  }
+  const config = loadImConfig();
+  imStore.config = config;
+  if (!config.enabled) {
+    logIm('startImBridge skipped (disabled)');
+    return;
+  }
+  logIm(`startImBridge mode=${config.mode} sandbox=${config.official.sandbox} appId=${config.official.appId}`);
+
+  let adapter;
+  if (config.mode === 'official') {
+    const f = config.official;
+    adapter = new QqOfficialAdapter({
+      appId: f.appId,
+      appSecret: f.appSecret,
+      sandbox: f.sandbox,
+      allowUsers: f.allowUsers,
+      allowGroups: f.allowGroups,
+    });
+    // 白名单命中失败（仅配置了白名单时）：通知主机（便于加白名单），不回消息
+    adapter.on('unauthorized', (info) => {
+      notify('QQ 官方机器人', `未授权访问（${info.kind} ${info.id}）——如需放行，加入白名单后重试`);
+    });
+  } else {
+    const ob = config.onebot;
+    adapter = new OneBotAdapter({
+      wsUrl: ob.wsUrl,
+      accessToken: ob.accessToken,
+      allowUsers: ob.allowUsers,
+      allowGroups: ob.allowGroups,
+    });
+  }
+  if (!adapter.isAllowlistValid()) {
+    notify('QQ 机器人', '缺少必要配置（官方模式需 AppID/AppSecret；OneBot 需白名单），机器人未启动。请在「机器人 → 配置」中填写。');
+    return;
+  }
+  logIm('adapter created, valid');
+  const dsh = new DshApiClient({ port: () => (manager && manager.isRunning() ? manager.port : null) });
+  const mapper = new SessionMapper(imDir());
+  const bridge = new ImBridge({
+    dsh,
+    mapper,
+    config: { passcode: config.passcode, idleMinutes: config.idleMinutes, notifyMode: config.notifyMode },
+    usageFn: () => (usage ? usage.snapshot() : null),
+    notify: (title, body) => notify(title, body),
+    // 任务完成系统通知与 preload 检测共用去重通道，避免同一任务弹两条
+    onTaskComplete: (title, body) => sendTaskNotification(title, body),
+    // /bot setting idle <分钟> 等：修改全局配置并持久化
+    onConfigChange: async (patch) => {
+      const cur = loadImConfig();
+      const next = normalizeImConfig({ ...cur, ...patch });
+      saveImConfig(next);
+      if (imStore) imStore.config = next;
+      return next;
+    },
+    log: (line) => logIm('bridge: ' + line),
+  });
+  bridge.setAdapters([{ name: config.mode, adapter }]);
+  // 适配器生命周期诊断
+  adapter.on('connected', () => {
+    logIm('adapter connected');
+    // 官方机器人：连接后自动配置全局菜单/指令面板（幂等；失败仅记日志）
+    if (config.mode === 'official' && typeof adapter.setMenu === 'function') {
+      setupImMenu(adapter);
+    }
+  });
+  adapter.on('disconnected', (info) => logIm(`adapter disconnected${info ? ' ' + JSON.stringify(info) : ''}`));
+  adapter.on('error', (e) => logIm(`adapter error: ${(e && e.message) || e}`));
+  try {
+    await bridge.start();
+    imStore.bridge = bridge;
+    imStore.dsh = dsh;
+    logIm('bridge started');
+    notify('QQ 机器人', `已开启（${config.mode === 'official' ? '官方机器人' : 'OneBot'}）`);
+  } catch (err) {
+    logIm(`bridge start failed: ${(err && err.message) || err}`);
+    notify('QQ 机器人', `启动失败：${(err && err.message) || err}`);
+  }
+  broadcastImState();
+}
+
+/** 官方机器人连接后：配置全局菜单 + 指令面板（幂等：已有则跳过；失败仅记日志） */
+async function setupImMenu(adapter) {
+  try {
+    // 1) 全局菜单：无则设置默认
+    const menu = await adapter.getMenu();
+    if (!menu || !menu.menu || !menu.menu.items || !menu.menu.items.length) {
+      await adapter.setMenu(QqOfficialAdapter.defaultMenu());
+      logIm('menu set: default');
+    } else {
+      logIm('menu exists, skip');
+    }
+    // 2) 指令面板（c2c）：无则创建默认
+    const panels = await adapter.listPanels('c2c');
+    const hasPanel = panels && Array.isArray(panels.records) && panels.records.length > 0;
+    if (!hasPanel) {
+      const created = await adapter.createPanel('c2c', QqOfficialAdapter.defaultPanel());
+      logIm(`panel created: ${(created && created.panel_id) || ''}`);
+    } else {
+      logIm('panel exists, skip');
+    }
+  } catch (err) {
+    // 菜单/面板能力可能未开通：仅记录，不打扰用户
+    logIm(`setupImMenu failed: ${(err && err.message) || err}`);
+  }
+}
+
+function stopImBridge({ silent = false } = {}) {
+  if (imStore && imStore.bridge) {
+    try {
+      imStore.bridge.stop();
+    } catch {
+      /* ignore */
+    }
+    imStore.bridge = null;
+    imStore.dsh = null;
+    if (!silent) notify('QQ 机器人', '已关闭');
+  }
+  broadcastImState();
+}
+
+function openImConfigWindow() {
+  if (imStore && imStore.configWin && !imStore.configWin.isDestroyed()) {
+    imStore.configWin.show();
+    imStore.configWin.focus();
+    return;
+  }
+  const win = new BrowserWindow({
+    width: 460,
+    height: 640, // 内容较多：加高 + 可缩放，避免保存按钮被截
+    resizable: true,
+    title: 'DSH Desk 机器人配置',
+    icon: ICON_PATH,
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: PRELOAD_JS },
+  });
+  win.setMenuBarVisibility(false);
+  win.loadFile(path.join(__dirname, 'im-config.html')).catch(() => {});
+  win.once('ready-to-show', () => win.show());
+  win.on('closed', () => {
+    if (imStore) imStore.configWin = null;
+  });
+  imStore.configWin = win;
+  return win;
+}
+
+// 机器人配置 IPC
+ipcMain.handle('im-get-config', () => (imStore ? imStore.config : loadImConfig()));
+
+ipcMain.handle('im-status', () => imStatus());
+
+ipcMain.handle('im-set-config', (_event, config) => {
+  const next = normalizeImConfig(config);
+  const wasRunning = Boolean(imStore && imStore.bridge);
+  const willRun = Boolean(next.enabled);
+  saveImConfig(next);
+  if (imStore) imStore.config = next;
+  // 停止时：若随后会重启则不弹「已关闭」；否则弹
+  stopImBridge({ silent: willRun });
+  if (willRun) startImBridge();
+  else if (wasRunning) notify('QQ 机器人', '已关闭');
+  return { ok: true };
+});
+
+ipcMain.handle('im-close-config', () => {
+  if (imStore && imStore.configWin) {
+    imStore.configWin.close();
+    imStore.configWin = null;
+  }
+  return { ok: true };
+});
 
 // ---------- 窗口配色（每窗口独立主题色，持久化到 userData/theme.json） ----------
 let themeStore = { mode: 'window', workspaceColors: {}, sessionColors: {}, notifications: { task: true, startup: true, error: true } };
@@ -138,7 +439,7 @@ function truncateText(s, max) {
 
 // 页面检测到 Harness 任务完成（且无排队消息等待）→ 系统通知
 // 标题带对话名（便于区分不同对话），第二行显示回复内容开头（截断为单行）
-// 多窗口（主窗口 + 附加窗口）的 preload 各自检测到同一任务完成并发 IPC → 去重合并成一条（见 task-notify.js）
+// 多窗口各自检测到同一任务完成并发 IPC → 按时间窗口合并成一条（见 task-notify.js）
 const { createTaskNotifier } = require('./task-notify');
 const sendTaskNotification = createTaskNotifier((title, body) => notifyIf('task', title, body));
 
@@ -561,12 +862,35 @@ function createTrayUI() {
     onOpenLogs: () => {
       if (manager) shell.openPath(manager.logDir);
     },
+    getIm: () => imStatus(),
+    onToggleIm: (enabled) => {
+      const config = loadImConfig();
+      config.enabled = Boolean(enabled);
+      saveImConfig(config);
+      if (imStore) imStore.config = config;
+      stopImBridge({ silent: Boolean(enabled) }); // 开启时静默停止旧实例（startImBridge 会发「已开启」）
+      if (config.enabled) startImBridge();
+    },
+    onOpenImConfig: openImConfigWindow,
+    onAppRestart: restartApp,
     onQuit: quit,
   });
   updateStatus();
 }
 
 // ---------- 退出 ----------
+/** 重启 DSH Desk：用 Electron 内置 relaunch（带原参数）后正常退出（供托盘「重启」菜单使用） */
+function restartApp() {
+  try {
+    app.relaunch({ args: process.argv.slice(1) });
+    logIm('restartApp: relaunch scheduled');
+  } catch (err) {
+    logIm(`restartApp failed: ${(err && err.message) || err}`);
+  }
+  // 正常退出（清理 DSH 进程树、机器人、usage），Electron 会自动拉起新实例
+  quit().catch(() => {});
+}
+
 async function quit() {
   isQuitting = true;
   if (deployChild) {
@@ -586,6 +910,7 @@ async function quit() {
     }
   }
   if (usage) usage.stop();
+  stopImBridge({ silent: true }); // 退出时静默关闭（不弹"已关闭"通知）
   app.quit();
 }
 
@@ -619,6 +944,10 @@ async function init() {
       // 启动成功通知（自启模式不打扰）
       if (!process.argv.includes('--autostart')) {
         notifyIf('startup', 'DeepSeek Harness 已就绪', attached ? `已附着到 ${url}` : `服务已启动：${url}`);
+      }
+      // 服务就绪后再启动机器人（保证通知顺序：先服务后机器人）
+      if (imStore && imStore.config && imStore.config.enabled && imStore.config.autoStart) {
+        startImBridge();
       }
       // 所有窗口（含最小化/不可见）都切到 DSH 界面
       for (const win of windows) {
@@ -665,6 +994,10 @@ async function init() {
     usage = new UsageTracker();
     usage.on('updated', updateStatus);
     usage.start(30000);
+
+    // QQ 机器人桥接（OneBot v11 / 官方）：服务就绪（manager ready）后按配置启动，
+    // 保证通知顺序「先服务后机器人」；autoStart=true 时随启动自动开启，否则需手动开启
+    imStore = { config: loadImConfig(), mapper: null, bridge: null, configWin: null };
 
     createTrayUI();
     setupJumpList();
