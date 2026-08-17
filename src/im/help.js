@@ -31,6 +31,7 @@ const HELP_TEXT = [
   '/model       切换模型（provider/model）',
   '/history n   最近 n 条聊天记录',
   '/stop        打断当前生成',
+  '/compact     压缩会话历史（摘要替换旧记录）',
   '/queue       查看排队状态',
   '',
   '【说明】',

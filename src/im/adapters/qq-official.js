@@ -543,6 +543,7 @@ class QqOfficialAdapter extends EventEmitter {
         { type: 'command', name: '模型', desc: '切换模型' },
         { type: 'command', name: '最近记录', desc: '最近聊天记录' },
         { type: 'command', name: '停止', desc: '打断生成' },
+        { type: 'command', name: '压缩', desc: '压缩会话历史' },
         { type: 'command', name: '排队', desc: '查看排队' },
       ],
       remark: 'DSH Desk 远程机器人常用指令',

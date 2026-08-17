@@ -23,9 +23,9 @@ function sameChat(a, b) {
   return a && b && a.type === b.type && String(a.id) === String(b.id);
 }
 
-/** 短命令白名单：/ws /ses /setting /status /usage /history /model /stop /queue /help
+/** 短命令白名单：/ws /ses /setting /status /usage /history /model /stop /queue /compact /help
  * 直接作为机器人命令；其余 / 开头仍透传 dsh */
-const SHORT_CMDS = new Set(['ws', 'ses', 'setting', 'status', 'usage', 'history', 'model', 'stop', 'queue', 'help']);
+const SHORT_CMDS = new Set(['ws', 'ses', 'setting', 'status', 'usage', 'history', 'model', 'stop', 'queue', 'compact', 'help']);
 function SHORT_CMD(text) {
   const s = String(text || '').trim();
   const m = /^\/([a-z]+)(?:[+\s](.*))?$/i.exec(s);
@@ -124,6 +124,7 @@ class ImBridge extends EventEmitter {
     this.unlocked = new Set(); // 已通过口令的 chatKey
     this.lastActive = new Map(); // chatKey → 最后活跃时间戳（闲置自动退出用）
     this._notifyAt = new Map(); // 通知标题 → 最后通知时间（节流：同类错误 30s 内只弹一次）
+    this.toolCalls = new Map(); // callId → { name, arguments }（tool/call → tool/result 关联）
     this.pollTimer = null;
     this.idleTimer = null;
     this._pollToken = 0;
@@ -481,8 +482,8 @@ class ImBridge extends EventEmitter {
               /* token 用量获取失败忽略 */
             }
           }
-          if (u.spent !== null && u.spent !== undefined && Number(u.spent) !== 0) {
-            lines.push(`本次启动消费：-¥${fmt(u.spent)}`);
+          if (u.spent !== null && u.spent !== undefined) {
+            lines.push(`本次启动消费：¥${fmt(u.spent)}`);
           }
           lines.push('每 30 秒自动刷新余额');
           return reply(lines.join('\n'));
@@ -572,6 +573,18 @@ class ImBridge extends EventEmitter {
           const items = this.queueState.get(binding.sessionId) || [];
           return reply(items.length ? '队列：\n' + items.map((it, i) => `${i + 1}. ${it.text || it.id || JSON.stringify(it)}`).join('\n') : '队列为空');
         }
+        case 'compact': {
+          // 对话压缩：透传 dsh 原生 /compact 命令（进程内 compaction 服务，保留会话 ID，
+          // 用摘要替换旧历史；命令结果在 session.prompt 的 command 槽位返回）
+          if (!binding || !binding.sessionId) return reply('先 /ses 绑定会话');
+          try {
+            const res = await this.dsh.prompt(binding.sessionId, '/compact', { mode: 'queue' });
+            const cmdText = res && res.command && res.command.text;
+            return reply(cmdText ? `🗜️ ${cmdText}` : '✅ 压缩请求已提交');
+          } catch (err) {
+            return reply(`❌ 压缩失败：${err.message}`);
+          }
+        }
         case 'status': {
           const st = this.status();
           const dshInfo = await this.dsh.describe().catch(() => null);
@@ -606,10 +619,54 @@ class ImBridge extends EventEmitter {
         if (text) cur.text = cur.text ? cur.text + '\n' + text : text;
         if (think) cur.think = cur.think ? cur.think + '\n' + think : think;
         this.replyBuf.set(p.sessionId, cur);
+      } else if (ev.type === 'tool/call') {
+        // 工具调用开始：记录 name/arguments，供 tool/result 关联展示
+        const d = ev.data || {};
+        if (d.callId) {
+          this.toolCalls.set(d.callId, { name: d.name || 'tool', arguments: d.arguments || '', sessionId: p.sessionId });
+        }
+      } else if (ev.type === 'tool/result') {
+        // 工具结果：格式化为独立消息发给 prompter 频道（截断信息流，避免刷屏）
+        this._handleToolResult(p.sessionId, ev);
       }
     } else if (p.type === 'session/queue') {
       this.queueState.set(p.sessionId, p.items || []);
     }
+  }
+
+  /** 工具结果 → 独立消息（发给该会话的 prompter 频道；无 prompter 则跳过） */
+  _handleToolResult(sessionId, ev) {
+    const prompter = this.prompter.get(sessionId);
+    if (!prompter) return;
+    const d = ev.data || {};
+    const msg = d.message || {};
+    const source = msg.source || {};
+    const call = this.toolCalls.get(source.callId);
+    const name = (call && call.name) || 'tool';
+    const blocks = Array.isArray(msg.content) ? msg.content : [];
+    // 提取 tool-result 块文本：content[].content[].text
+    let text = '';
+    let isError = false;
+    for (const b of blocks) {
+      if (!b || b.type !== 'tool-result') continue;
+      if (b.isError) isError = true;
+      const inner = Array.isArray(b.content) ? b.content : [];
+      for (const it of inner) {
+        if (it && typeof it.text === 'string') text += it.text;
+      }
+    }
+    if (d.error) isError = true;
+    // 格式化（截断 1500 字符防刷屏）
+    const body = isError
+      ? `❌ 工具 \`${name}\` 失败${text ? '\n```\n' + truncate(text, 1500) + '\n```' : ''}`
+      : text
+        ? `🔧 \`${name}\` 完成\n\`\`\`\n${truncate(text, 1500)}\n\`\`\``
+        : null;
+    if (body === null) return;
+    // 单条消息过长时交给适配器分片；独立发送，不进回复正文
+    const chat = prompter.chat;
+    const adapter = this._adapterFor(prompter.platform);
+    if (adapter) this._reply(chat, body, adapter);
   }
 
   async _pollRunning(token) {
@@ -638,6 +695,10 @@ class ImBridge extends EventEmitter {
     this.replyBuf.delete(item.sessionId);
     const prompter = this.prompter.get(item.sessionId);
     this.prompter.delete(item.sessionId);
+    // 清理该会话的工具调用记录（防 map 无限增长）
+    for (const [callId, c] of Array.from(this.toolCalls.entries())) {
+      if (c && c.sessionId === item.sessionId) this.toolCalls.delete(callId);
+    }
     const title = sessionTitleOf(item) || item.sessionId;
 
     // 正文来源：优先 history（完整回复，含流式 chunk 合并后的 assistant/message）；

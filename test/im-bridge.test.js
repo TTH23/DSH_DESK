@@ -991,3 +991,76 @@ test('非QQ任务推送：none=不推 / brief=短提醒 / full=全文', async (t
   const fullText = msgs.map((a) => String(a.params.message)).join('\n');
   assert.ok(fullText.includes('任务完成「会话A」') && fullText.includes('这是第一段回复'), 'full 模式发全文');
 });
+
+test('/compact 透传 dsh 原生压缩命令并回显结果', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  const { bridge } = await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  mockBot.pushPrivate(111, '/compact');
+  await waitFor(() => mockBot.sent.some((a) => /🗜️|Compacted|已执行/.test(String(a.params.message))));
+  const sent = sendActionsOf(mockBot, 'send_private_msg').map((a) => String(a.params.message)).join('\n');
+  // 断言 prompt 里发的是原生 /compact 且结果被回显
+  assert.strictEqual(mockDsh.state.prompts.at(-1).content[0].text, '/compact');
+  assert.ok(sent.length > 0);
+});
+
+test('工具结果独立消息：tool/call + tool/result → 单独发送（不进回复正文）', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  const { bridge } = await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  // 用户发消息 → prompter 建立
+  mockBot.pushPrivate(111, '帮我看看');
+  await waitFor(() => mockBot.sent.some((a) => /已提交|已加入队列/.test(String(a.params.message))));
+
+  // 模拟 mux 流：tool/call → tool/result
+  mockDsh.pushMux({ type: 'session/event', sessionId: 's-1', event: { type: 'tool/call', data: { callId: 'call-1', name: 'pwsh', arguments: '{}' } } });
+  mockDsh.pushMux({
+    type: 'session/event',
+    sessionId: 's-1',
+    event: {
+      type: 'tool/result',
+      data: {
+        message: {
+          source: { callId: 'call-1' },
+          content: [{ type: 'tool-result', isError: false, content: [{ type: 'text', text: '命令输出内容 abc' }] }],
+        },
+      },
+    },
+  });
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('🔧 `pwsh` 完成')));
+  const toolMsg = sendActionsOf(mockBot, 'send_private_msg').map((a) => String(a.params.message)).find((m) => m.includes('🔧'));
+  assert.ok(toolMsg.includes('命令输出内容 abc'), '工具结果应含输出文本');
+});
+
+test('工具结果：错误结果优先展示（isError / error 字段）', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  const { bridge } = await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  mockBot.pushPrivate(111, '执行下');
+  await waitFor(() => mockBot.sent.some((a) => /已提交|已加入队列/.test(String(a.params.message))));
+
+  mockDsh.pushMux({ type: 'session/event', sessionId: 's-1', event: { type: 'tool/call', data: { callId: 'call-2', name: 'read' } } });
+  mockDsh.pushMux({
+    type: 'session/event',
+    sessionId: 's-1',
+    event: {
+      type: 'tool/result',
+      data: {
+        message: {
+          source: { callId: 'call-2' },
+          content: [{ type: 'tool-result', isError: true, content: [{ type: 'text', text: 'ENOENT no such file' }] }],
+        },
+      },
+    },
+  });
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('❌ 工具 `read` 失败')));
+});

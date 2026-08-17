@@ -2,6 +2,12 @@
 // 系统托盘：图标（状态角标由主进程切换）+ 二级菜单
 // 主菜单只留常用操作；服务/用量/通知收进二级菜单，信息不再分散
 const { Tray, Menu, nativeImage } = require('electron');
+const { isPeak } = require('./usage');
+
+// 峰谷计价状态标记：☼=高峰（贵，×2），☾=月亮=空闲（半价）。
+// 用 Segoe UI Symbol 文本符号而非彩色 emoji——托盘菜单渲染 emoji 会变方框/黑白块。
+const PEAK_MARK = { on: '☼', off: '☾' };
+const PEAK_LABEL = { on: '高峰', off: '空闲' };
 
 const STATUS_TEXT = {
   running: '运行中',
@@ -65,7 +71,7 @@ function createTray(opts) {
       items.push({ label: truncate(`用量失败：${u.error}`), enabled: false });
     } else {
       items.push({ label: `余额 ¥${fmt(u.balance)}`, enabled: false });
-      items.push({ label: `本次启动消费 -¥${fmt(u.spent)}`, enabled: false });
+      items.push({ label: `本次启动消费 ¥${fmt(u.spent)}`, enabled: false });
     }
     items.push({ type: 'separator' });
     items.push({ label: '刷新用量', click: opts.onRefreshUsage });
@@ -97,15 +103,15 @@ function createTray(opts) {
     return items;
   }
 
-  // 用量信息（主菜单直接显示，拆成两行：余额 / 本次消费）
+  // 用量信息（主菜单直接显示，拆成两行：余额 / 本次启动消费）
   function usageInfoItems() {
     if (typeof opts.getUsage !== 'function') return [];
     const u = opts.getUsage();
     if (!u.keyConfigured) return [{ label: '用量：未配置 Key', enabled: false }];
     if (u.error) return [{ label: truncate(`用量失败：${u.error}`), enabled: false }];
     return [
-      { label: `¥${fmt(u.balance)}`, enabled: false },
-      { label: `-¥${fmt(u.spent)}（启动后）`, enabled: false },
+      { label: `余额 ¥${fmt(u.balance)}`, enabled: false },
+      { label: `本次启动消费 ¥${fmt(u.spent)}`, enabled: false },
     ];
   }
 
@@ -146,7 +152,7 @@ function createTray(opts) {
     const running = state === 'running';
     const stopped = state === 'stopped' || state === 'failed';
     const infoItems = [
-      { label: `${STATE_ICON[state] || '○'} ${statusText}`, enabled: false },
+      { label: `${STATE_ICON[state] || '○'} ${statusText} ${isPeak(Date.now()) ? PEAK_MARK.on : PEAK_MARK.off}`, enabled: false },
       ...usageInfoItems(),
     ];
     return Menu.buildFromTemplate([
@@ -185,7 +191,18 @@ function createTray(opts) {
   function refresh() {
     const info = opts.getState();
     const statusText = STATUS_TEXT[info.state] || info.state;
-    tray.setToolTip(`DSH Desk — ${statusText}${info.url ? ' · ' + info.url : ''}`);
+    // 峰谷标记：☀=高峰（×2） / 🌙=空闲（半价），悬停可见，低调不打扰
+    const peakMark = isPeak(Date.now()) ? PEAK_MARK.on : PEAK_MARK.off;
+    const peakLabel = isPeak(Date.now()) ? PEAK_LABEL.on : PEAK_LABEL.off;
+    // tooltip 带金额：悬停即可查看余额与本次启动消费（无需右键）
+    let tip = `DSH Desk — ${statusText} ${peakMark} ${peakLabel}`;
+    if (typeof opts.getUsage === 'function') {
+      const u = opts.getUsage();
+      if (u && u.keyConfigured && !u.error) {
+        tip += ` · 余额 ¥${fmt(u.balance)} · 消费 ¥${fmt(u.spent)}`;
+      }
+    }
+    tray.setToolTip(tip + (info.url ? `\n${info.url}` : ''));
     tray.setContextMenu(buildMenu());
   }
 
