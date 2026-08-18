@@ -23,9 +23,9 @@ function sameChat(a, b) {
   return a && b && a.type === b.type && String(a.id) === String(b.id);
 }
 
-/** 短命令白名单：/ws /ses /setting /status /usage /history /model /stop /queue /compact /help
+/** 短命令白名单：/ws /ses /setting /status /usage /history /model /stop /queue /compact /approve /reject /answer /help
  * 直接作为机器人命令；其余 / 开头仍透传 dsh */
-const SHORT_CMDS = new Set(['ws', 'ses', 'setting', 'status', 'usage', 'history', 'model', 'stop', 'queue', 'compact', 'help']);
+const SHORT_CMDS = new Set(['ws', 'ses', 'setting', 'status', 'usage', 'history', 'model', 'stop', 'queue', 'compact', 'approve', 'reject', 'answer', 'help']);
 function SHORT_CMD(text) {
   const s = String(text || '').trim();
   const m = /^\/([a-z]+)(?:[+\s](.*))?$/i.exec(s);
@@ -125,6 +125,8 @@ class ImBridge extends EventEmitter {
     this.lastActive = new Map(); // chatKey → 最后活跃时间戳（闲置自动退出用）
     this._notifyAt = new Map(); // 通知标题 → 最后通知时间（节流：同类错误 30s 内只弹一次）
     this.toolCalls = new Map(); // callId → { name, arguments }（tool/call → tool/result 关联）
+    this.pendingApprovals = new Map(); // approvalId → { rpcId, sessionId, toolName, chat, platform, timer }
+    this.pendingQuestions = new Map(); // rpcId → { questions, sessionId, chat, platform, timer }
     this.pollTimer = null;
     this.idleTimer = null;
     this._pollToken = 0;
@@ -585,6 +587,46 @@ class ImBridge extends EventEmitter {
             return reply(`❌ 压缩失败：${err.message}`);
           }
         }
+        case 'approve':
+        case 'reject': {
+          // 远程审批应答：/approve <approvalId> 允许一次 | /reject <approvalId> 拒绝
+          const approvalId = (arg || '').trim();
+          const rec = approvalId ? this.pendingApprovals.get(approvalId) : null;
+          if (!rec) return reply('⚠️ 该审批不存在、已处理或已超时');
+          if (rec.timer) clearTimeout(rec.timer);
+          this.pendingApprovals.delete(approvalId);
+          const outcome = cmd === 'approve' ? 'allowed-once' : 'rejected';
+          try {
+            await this._answerApproval(rec.rpcId, rec.sessionId, approvalId, outcome);
+            return reply(`${cmd === 'approve' ? '✅ 已允许' : '❌ 已拒绝'}：\`${rec.toolName}\``);
+          } catch (err) {
+            return reply(`❌ 应答失败：${err.message}`);
+          }
+        }
+        case 'answer': {
+          // 远程提问应答：/answer <rpcId> <questionIdx> <optionIdx>
+          const [rid, qi, oi] = (arg || '').split(/\s+/);
+          const rec = rid ? this.pendingQuestions.get(rid) : null;
+          if (!rec) return reply('⚠️ 该提问不存在、已处理或已超时');
+          const q = rec.questions[Number(qi)];
+          if (!q) return reply('⚠️ 问题索引无效');
+          const opts = Array.isArray(q.options) && q.options.length ? q.options : [{ label: '确认', value: 'ok' }];
+          const opt = opts[Number(oi)];
+          if (!opt) return reply('⚠️ 选项索引无效');
+          if (rec.timer) clearTimeout(rec.timer);
+          this.pendingQuestions.delete(rid);
+          const label = typeof opt === 'string' ? opt : opt.label || String(opt.value);
+          const answers = rec.questions.map((qq) => ({
+            id: qq.id || String(rec.questions.indexOf(qq)),
+            selected: qq === q ? [label] : [],
+          }));
+          try {
+            await this.dsh.respond(rec.rpcId, { sessionId: rec.sessionId, answer: { answers } });
+            return reply(`✅ 已提交回答：${label}`);
+          } catch (err) {
+            return reply(`❌ 应答失败：${err.message}`);
+          }
+        }
         case 'status': {
           const st = this.status();
           const dshInfo = await this.dsh.describe().catch(() => null);
@@ -631,6 +673,20 @@ class ImBridge extends EventEmitter {
       }
     } else if (p.type === 'session/queue') {
       this.queueState.set(p.sessionId, p.items || []);
+    } else if (p.type === 'approval/requested') {
+      // dsh agent 工具调用需要用户确认 → 转 QQ 按钮询问（带 rpcId 应答）
+      this._handleApprovalRequested(frame.rpcId, p);
+    } else if (p.type === 'approval/resolved') {
+      this._handleApprovalResolved(p);
+    } else if (p.type === 'question/requested') {
+      // dsh 向用户提问（ask()）→ 转 QQ 按钮询问
+      this._handleQuestionRequested(frame.rpcId, p);
+    } else if (p.type === 'question/resolved') {
+      const rec = this.pendingQuestions.get(p.questionRpcId);
+      if (rec) {
+        if (rec.timer) clearTimeout(rec.timer);
+        this.pendingQuestions.delete(p.questionRpcId);
+      }
     }
   }
 
@@ -667,6 +723,88 @@ class ImBridge extends EventEmitter {
     const chat = prompter.chat;
     const adapter = this._adapterFor(prompter.platform);
     if (adapter) this._reply(chat, body, adapter);
+  }
+
+  // ---------- 远程审批（approval / question 桥接到 QQ 按钮）----------
+
+  /** approval/requested：工具调用需用户确认 → 向发起频道发询问 + 允许/拒绝按钮 */
+  _handleApprovalRequested(rpcId, p) {
+    const approvalId = p.approvalId;
+    if (!approvalId) return;
+    // 发往发起该会话对话的频道（prompter）；无 prompter 或已存在同 id → fail-closed 拒绝
+    const prompter = this.prompter.get(p.sessionId);
+    const rec = this.pendingApprovals.get(approvalId);
+    if (!prompter || rec) {
+      if (rec && rec.rpcId) {
+        // 重复帧：用最新 rpcId 再答一次（幂等安全）
+        this._answerApproval(rec.rpcId, p.sessionId, approvalId, 'rejected').catch(() => {});
+      }
+      return;
+    }
+    const toolName = p.toolName || 'tool';
+    const reason = p.reason || '';
+    const chat = prompter.chat;
+    const platform = prompter.platform;
+    const rec_ = { rpcId, sessionId: p.sessionId, approvalId, toolName, chat, platform, timer: null };
+    // 超时 60s 未应答 → 自动拒绝（fail-closed，安全默认）
+    rec_.timer = setTimeout(() => {
+      this.pendingApprovals.delete(approvalId);
+      this._answerApproval(rpcId, p.sessionId, approvalId, 'rejected')
+        .then(() => this._reply(chat, `⏰ 审批超时（${toolName}），已自动拒绝`, this._adapterFor(platform)))
+        .catch(() => {});
+    }, 60000);
+    this.pendingApprovals.set(approvalId, rec_);
+    // 按钮：允许一次 / 拒绝
+    const adapter = this._adapterFor(platform);
+    const text = `🛡️ 工具 \`${toolName}\` 请求执行权限\n${reason ? reason + '\n' : ''}是否允许？（60 秒内作答，超时自动拒绝）`;
+    const buttons = [
+      { label: '✅ 允许一次', cmd: `/approve ${approvalId}` },
+      { label: '❌ 拒绝', cmd: `/reject ${approvalId}` },
+    ];
+    this._reply(chat, text, adapter, adapter && adapter.supportsKeyboard ? { keyboard: keyboardOf(buttons, (b) => ({ label: shortLabel(b.label), cmd: b.cmd })) } : null);
+  }
+
+  /** approval/resolved：通知结果，清理 pending */
+  _handleApprovalResolved(p) {
+    const rec = this.pendingApprovals.get(p.approvalId);
+    if (!rec) return;
+    if (rec.timer) clearTimeout(rec.timer);
+    this.pendingApprovals.delete(p.approvalId);
+    const label = p.outcome === 'allowed-once' ? '✅ 已允许' : p.outcome === 'rejected' ? '❌ 已拒绝' : p.outcome === 'cancelled' ? '⏹ 已取消' : '⚠️ 无应答方';
+    const adapter = this._adapterFor(rec.platform);
+    if (adapter) this._reply(rec.chat, `${label}：\`${rec.toolName}\``, adapter);
+  }
+
+  /** 应答 approval：echo rpcId + outcome */
+  async _answerApproval(rpcId, sessionId, approvalId, outcome) {
+    return this.dsh.respond(rpcId, { sessionId, approvalId, outcome });
+  }
+
+  /** question/requested：dsh ask() 提问 → QQ 按钮（每个问题一个选项按钮，一次答全部） */
+  _handleQuestionRequested(rpcId, p) {
+    const prompter = this.prompter.get(p.sessionId);
+    if (!prompter) return;
+    const questions = Array.isArray(p.questions) ? p.questions : [];
+    if (!questions.length) return;
+    const chat = prompter.chat;
+    const platform = prompter.platform;
+    const adapter = this._adapterFor(platform);
+    // 每个问题：标题 + 选项按钮（optionIdx 编码到 cmd）
+    const lines = questions.map((q, i) => `${i + 1}. ${q.question || q.text || '问题'}${q.detail ? '\n   ' + q.detail : ''}`);
+    const text = `❓ dsh 提问：\n${lines.join('\n')}\n（点下方按钮作答，60 秒内有效）`;
+    const buttons = [];
+    questions.forEach((q, i) => {
+      const opts = Array.isArray(q.options) && q.options.length ? q.options : [{ label: '确认', value: 'ok' }];
+      opts.forEach((o, j) => {
+        buttons.push({ label: typeof o === 'string' ? o : o.label || o.value || '确认', cmd: `/answer ${rpcId} ${i} ${j}` });
+      });
+    });
+    const rec = { rpcId, questions, sessionId: p.sessionId, chat, platform, timer: null };
+    rec.timer = setTimeout(() => {
+      this.pendingQuestions.delete(rpcId);
+    }, 60000);
+    this.pendingQuestions.set(rpcId, rec);
+    this._reply(chat, text, adapter, adapter && adapter.supportsKeyboard ? { keyboard: keyboardOf(buttons, (b) => ({ label: shortLabel(b.label), cmd: b.cmd }), { perRow: 3 }) } : null);
   }
 
   async _pollRunning(token) {

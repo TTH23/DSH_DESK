@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 
 const MUX_PATH = '/api/events.mux';
+const RESPOND_PATH = '/api/respond';
 
 class DshApiError extends Error {
   constructor(code, message, details) {
@@ -96,6 +97,58 @@ class DshApiClient extends EventEmitter {
       });
       req.setTimeout(timeoutMs, () => {
         req.destroy(new DshApiError('timeout', `${method} 调用超时`));
+      });
+      req.write(body);
+      req.end();
+    });
+  }
+
+  /**
+   * 应答服务器发起的可应答帧（approval/question requested）。
+   * 协议：POST /api/respond，body = client-response（echo 服务器帧的 rpcId）。
+   * 返回 RpcReceipt { accepted: true } | { accepted: false, reason }。
+   */
+  respond(rpcId, value, { timeoutMs = 30000 } = {}) {
+    return new Promise((resolve, reject) => {
+      const port = this._port();
+      if (!port) return reject(new DshApiError('transport', 'dsh 端口未知（服务未就绪）'));
+      const body = JSON.stringify({
+        type: 'client-response',
+        rpcId,
+        result: { ok: true, value },
+      });
+      let req;
+      try {
+        req = http.request(
+          {
+            host: this.host,
+            port,
+            method: 'POST',
+            path: RESPOND_PATH,
+            headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+          },
+          (res) => {
+            let data = '';
+            res.on('data', (c) => (data += c));
+            res.on('end', () => {
+              try {
+                const parsed = JSON.parse(data);
+                resolve(parsed); // RpcReceipt: {accepted:true} | {accepted:false,reason}
+              } catch (err) {
+                reject(new DshApiError('bad-response', `respond 响应解析失败：${err.message}`));
+              }
+            });
+          }
+        );
+      } catch (err) {
+        return reject(new DshApiError('transport', `无法连接 dsh：${err.message}`));
+      }
+      req.on('error', (err) => {
+        if (err instanceof DshApiError) return reject(err);
+        reject(new DshApiError('transport', `无法连接 dsh：${err.message}`));
+      });
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new DshApiError('timeout', 'respond 调用超时'));
       });
       req.write(body);
       req.end();

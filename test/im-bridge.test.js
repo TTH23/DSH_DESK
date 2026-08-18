@@ -84,6 +84,7 @@ async function makeMockDsh(t, initialSessions = [], workspaces = null, archivedS
     prompts: [],
     cancels: [],
     selectModels: [],
+    responses: [],
     archivedSessionIds,
   };
   // 默认一个工作区，sessionIds 取自初始会话；可传 workspaces 覆盖
@@ -93,9 +94,9 @@ async function makeMockDsh(t, initialSessions = [], workspaces = null, archivedS
       ? [{ id: 'ws-1', workspaceId: 'ws-1', title: '项目A', sessionIds: initialSessions.map((s) => s.sessionId) }]
       : []);
   let muxSocket = null;
-  const pushMux = (payload) => {
+  const pushMux = (payload, rpcId = 'r-e') => {
     if (muxSocket) {
-      muxSocket.write(wsFrame({ type: 'server-request', rpcId: 'r-e', method: 'events.mux', payload }));
+      muxSocket.write(wsFrame({ type: 'server-request', rpcId, method: 'events.mux', payload }));
     }
   };
   const srv = http.createServer((req, res) => {
@@ -103,6 +104,13 @@ async function makeMockDsh(t, initialSessions = [], workspaces = null, archivedS
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       const env = JSON.parse(body || '{}');
+      // /api/respond：approval/question 应答（client-response 帧）
+      if (env.type === 'client-response') {
+        state.responses.push(env);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ accepted: true }));
+        return;
+      }
       const send = (result) => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ type: 'server-response', rpcId: env.rpcId, result }));
@@ -1063,4 +1071,80 @@ test('工具结果：错误结果优先展示（isError / error 字段）', asyn
     },
   });
   await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('❌ 工具 `read` 失败')));
+});
+
+test('远程审批：approval/requested → QQ 按钮询问 → /approve 应答 allowed-once', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  const { bridge } = await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  // 用户发消息 → prompter 建立
+  mockBot.pushPrivate(111, '帮我执行');
+  await waitFor(() => mockBot.sent.some((a) => /已提交|已加入队列/.test(String(a.params.message))));
+
+  // dsh 推 approval/requested（rpcId 在帧外层）
+  mockDsh.pushMux({ type: 'approval/requested', sessionId: 's-1', approvalId: 'appr-1', toolName: 'pwsh', reason: '需要执行 powershell 命令' }, 'rpc-appr-1');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('请求执行权限')));
+
+  // 用户点「允许一次」→ QQ 发 /approve appr-1
+  mockBot.pushPrivate(111, '/approve appr-1');
+  await waitFor(() => mockDsh.state.responses.length === 1);
+  const resp = mockDsh.state.responses[0];
+  assert.strictEqual(resp.type, 'client-response');
+  assert.strictEqual(resp.rpcId, 'rpc-appr-1', '应答应 echo 服务器帧 rpcId');
+  assert.deepStrictEqual(resp.result.value, { sessionId: 's-1', approvalId: 'appr-1', outcome: 'allowed-once' });
+  assert.ok(mockBot.sent.some((a) => String(a.params.message).includes('✅ 已允许')), '应回显已允许');
+
+  // approval/resolved 帧 → 状态清理 + 通知
+  mockDsh.pushMux({ type: 'approval/resolved', sessionId: 's-1', approvalId: 'appr-1', outcome: 'allowed-once' });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(bridge.pendingApprovals.has('appr-1'), false, 'resolved 后清理 pending');
+});
+
+test('远程审批：/reject 应答 rejected；未知 id 提示', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  const { bridge } = await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  mockBot.pushPrivate(111, '跑一下');
+  await waitFor(() => mockBot.sent.some((a) => /已提交|已加入队列/.test(String(a.params.message))));
+
+  // 未知 id：直接提示不存在
+  mockBot.pushPrivate(111, '/reject bogus-id');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('不存在')));
+
+  // 真实审批 → 拒绝
+  mockDsh.pushMux({ type: 'approval/requested', sessionId: 's-1', approvalId: 'appr-2', toolName: 'read', reason: '读取文件' }, 'rpc-appr-2');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('请求执行权限')));
+  mockBot.pushPrivate(111, '/reject appr-2');
+  await waitFor(() => mockDsh.state.responses.length === 1);
+  assert.strictEqual(mockDsh.state.responses[0].result.value.outcome, 'rejected');
+});
+
+test('远程提问：question/requested → QQ 按钮 → /answer 批量提交', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  const { bridge } = await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  mockBot.pushPrivate(111, '问问你');
+  await waitFor(() => mockBot.sent.some((a) => /已提交|已加入队列/.test(String(a.params.message))));
+
+  mockDsh.pushMux(
+    { type: 'question/requested', sessionId: 's-1', questions: [{ id: 'q-1', question: '选哪个方案？', options: [{ label: '方案A' }, { label: '方案B' }] }] },
+    'rpc-q-1'
+  );
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('dsh 提问')));
+
+  // 点「方案B」→ /answer rpc-q-1 0 1
+  mockBot.pushPrivate(111, '/answer rpc-q-1 0 1');
+  await waitFor(() => mockDsh.state.responses.length === 1);
+  const resp = mockDsh.state.responses[0];
+  assert.strictEqual(resp.rpcId, 'rpc-q-1');
+  assert.deepStrictEqual(resp.result.value.answer, { answers: [{ id: 'q-1', selected: ['方案B'] }] });
 });

@@ -32,6 +32,8 @@ const HELP_TEXT = [
   '/history n   最近 n 条聊天记录',
   '/stop        打断当前生成',
   '/compact     压缩会话历史（摘要替换旧记录）',
+  '/approve     允许工具执行（审批按钮，也可手输 /approve <id>）',
+  '/reject      拒绝工具执行（审批按钮，也可手输 /reject <id>）',
   '/queue       查看排队状态',
   '',
   '【说明】',
