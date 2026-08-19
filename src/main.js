@@ -86,6 +86,41 @@ function imConfigFile() {
   return path.join(imDir(), 'config.json');
 }
 
+/** 机器人在线心跳标记：启动连接成功时写，优雅退出时删。
+ * 下次启动若标记仍存在 → 上次为非正常退出（强杀/崩溃/断电），上线提醒里提示。 */
+function imOnlineFlagFile() {
+  return path.join(imDir(), 'online.flag');
+}
+
+function writeImOnlineFlag() {
+  try {
+    fs.mkdirSync(imDir(), { recursive: true });
+    fs.writeFileSync(imOnlineFlagFile(), `${new Date().toISOString()}\n`, 'utf8');
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearImOnlineFlag() {
+  try {
+    fs.rmSync(imOnlineFlagFile(), { force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 上次是否非正常退出（心跳标记仍在 = 强杀/崩溃）；读取后清掉标记 */
+function consumeImAbnormalExitFlag() {
+  try {
+    const f = imOnlineFlagFile();
+    if (!fs.existsSync(f)) return false;
+    fs.rmSync(f, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeImConfig(c) {
   const src = c && typeof c === 'object' ? c : {};
   const o = src.onebot && typeof src.onebot === 'object' ? src.onebot : {};
@@ -219,6 +254,7 @@ async function startImBridge() {
     log: (line) => logIm('bridge: ' + line),
   });
   bridge.setAdapters([{ name: config.mode, adapter }]);
+  imStore.adapters = [adapter]; // 供停止/下线消息使用
   // 适配器生命周期诊断
   adapter.on('connected', () => {
     logIm('adapter connected');
@@ -226,8 +262,24 @@ async function startImBridge() {
     if (config.mode === 'official' && typeof adapter.setMenu === 'function') {
       setupImMenu(adapter);
     }
+    // 上线提醒：系统通知 +（有绑定私聊频道时）主动发 QQ 消息
+    notifyIf('startup', 'QQ 机器人', `🤖 已上线（${config.mode === 'official' ? '官方机器人' : 'OneBot'}）`);
+    try {
+      // 上次异常退出（强杀/崩溃）→ 提醒（先检查再写标记，避免误报）
+      if (consumeImAbnormalExitFlag()) {
+        notifyIf('error', 'QQ 机器人', '⚠️ 检测到上次为非正常退出（强杀/崩溃/断电），本次已重新连接');
+      }
+      writeImOnlineFlag();
+      sendImOnlineMessage(adapter, config.mode === 'official' ? '官方机器人' : 'OneBot');
+    } catch {
+      /* 上线消息失败忽略 */
+    }
   });
-  adapter.on('disconnected', (info) => logIm(`adapter disconnected${info ? ' ' + JSON.stringify(info) : ''}`));
+  adapter.on('disconnected', (info) => {
+    logIm(`adapter disconnected${info ? ' ' + JSON.stringify(info) : ''}`);
+    // 断线（非退出）：静默节流通知（重连时会再次触发 connected → 上线提醒）
+    notifyIf('error', 'QQ 机器人', '⚠️ 机器人连接断开，正在尝试重连…');
+  });
   adapter.on('error', (e) => logIm(`adapter error: ${(e && e.message) || e}`));
   try {
     await bridge.start();
@@ -242,23 +294,37 @@ async function startImBridge() {
   broadcastImState();
 }
 
-/** 官方机器人连接后：配置全局菜单 + 指令面板（幂等：已有则跳过；失败仅记日志） */
+/** 官方机器人连接后：配置全局菜单 + 指令面板（幂等：已有则跳过；失败仅记日志）。
+ * 兼容旧面板：若已存在但指令仍是旧版 /bot+xxx（平台侧缓存），重建为短命令版本。 */
 async function setupImMenu(adapter) {
   try {
-    // 1) 全局菜单：无则设置默认
+    // 1) 全局菜单：无则设置默认；有但含旧版 /bot 指令 → 重建
     const menu = await adapter.getMenu();
+    const hasLegacyMenu = menu && menu.menu && menu.menu.items && menu.menu.items.some((it) => /\/bot[+\s]/.test(String((it && it.send_message) || '')));
     if (!menu || !menu.menu || !menu.menu.items || !menu.menu.items.length) {
       await adapter.setMenu(QqOfficialAdapter.defaultMenu());
       logIm('menu set: default');
+    } else if (hasLegacyMenu) {
+      await adapter.setMenu(QqOfficialAdapter.defaultMenu());
+      logIm('menu refreshed: legacy /bot+ items replaced');
     } else {
       logIm('menu exists, skip');
     }
-    // 2) 指令面板（c2c）：无则创建默认
+    // 2) 指令面板（c2c）：无则创建默认；有但含旧版 /bot 指令 → 删除重建（无 update 端点）
     const panels = await adapter.listPanels('c2c');
-    const hasPanel = panels && Array.isArray(panels.records) && panels.records.length > 0;
+    const records = (panels && Array.isArray(panels.records) && panels.records) || [];
+    const hasPanel = records.length > 0;
+    const legacyPanel = records.find((r) => {
+      const items = (r && (Array.isArray(r.commands) ? r.commands : Array.isArray(r.items) ? r.items : [])) || [];
+      return items.some((it) => /\/bot[+\s]/.test(String((it && (it.command || it.send_message || it.data)) || '')));
+    });
     if (!hasPanel) {
       const created = await adapter.createPanel('c2c', QqOfficialAdapter.defaultPanel());
       logIm(`panel created: ${(created && created.panel_id) || ''}`);
+    } else if (legacyPanel) {
+      await adapter.deletePanel(legacyPanel.panel_id);
+      await adapter.createPanel('c2c', QqOfficialAdapter.defaultPanel());
+      logIm('panel recreated: legacy /bot+ items replaced');
     } else {
       logIm('panel exists, skip');
     }
@@ -268,7 +334,7 @@ async function setupImMenu(adapter) {
   }
 }
 
-function stopImBridge({ silent = false } = {}) {
+function stopImBridge({ silent = false, adapter = null } = {}) {
   if (imStore && imStore.bridge) {
     try {
       imStore.bridge.stop();
@@ -277,9 +343,59 @@ function stopImBridge({ silent = false } = {}) {
     }
     imStore.bridge = null;
     imStore.dsh = null;
-    if (!silent) notify('QQ 机器人', '已关闭');
+    if (!silent) {
+      notify('QQ 机器人', '已关闭');
+      // 优雅关闭：尽力发 QQ 下线消息 + 清心跳标记（强杀/崩溃发不出，靠标记下次上线提示）
+      try {
+        const a = adapter || (imStore.adapters && imStore.adapters[0]);
+        sendImOfflineMessage(a);
+        clearImOnlineFlag();
+      } catch {
+        /* ignore */
+      }
+    }
   }
   broadcastImState();
+}
+
+/** 上线 QQ 消息：发给最近绑定的私聊频道（channelId 不含 group: 前缀）——主动通知"机器人已上线"。
+ * 无绑定频道则静默跳过（用户可手动 /status 查看）。 */
+function sendImOnlineMessage(adapter, modeLabel) {
+  const bridge = imStore && imStore.bridge;
+  const mapper = bridge && bridge.mapper;
+  if (!mapper) return;
+  const all = mapper.all() || {};
+  const keys = Object.keys(all);
+  // 优先私聊（key 形如 'qqofficial:<openid>' 或 'qq:<uin>'，不含 group:）
+  const privateKey = keys.find((k) => !k.includes('group:'));
+  if (!privateKey) return;
+  const idx = privateKey.indexOf(':');
+  const platform = idx > 0 ? privateKey.slice(0, idx) : '';
+  const chatId = idx > 0 ? privateKey.slice(idx + 1) : privateKey;
+  const chat = { type: 'private', id: chatId };
+  try {
+    adapter.send(chat, `🤖 机器人已上线（${modeLabel}），可以开始使用了`);
+  } catch {
+    /* 发送失败忽略（例如适配器未就绪） */
+  }
+}
+
+/** 下线 QQ 消息：优雅退出/关闭机器人时尽力发出（强杀/崩溃发不出，靠心跳标记下次上线提示） */
+function sendImOfflineMessage(adapter) {
+  if (!adapter) return;
+  const bridge = imStore && imStore.bridge;
+  const mapper = bridge && bridge.mapper;
+  if (!mapper) return;
+  const all = mapper.all() || {};
+  const privateKey = Object.keys(all).find((k) => !k.includes('group:'));
+  if (!privateKey) return;
+  const idx = privateKey.indexOf(':');
+  const chatId = idx > 0 ? privateKey.slice(idx + 1) : privateKey;
+  try {
+    adapter.send({ type: 'private', id: chatId }, '😴 机器人已下线，再见');
+  } catch {
+    /* 忽略 */
+  }
 }
 
 function openImConfigWindow() {
@@ -315,14 +431,12 @@ ipcMain.handle('im-status', () => imStatus());
 
 ipcMain.handle('im-set-config', (_event, config) => {
   const next = normalizeImConfig(config);
-  const wasRunning = Boolean(imStore && imStore.bridge);
   const willRun = Boolean(next.enabled);
   saveImConfig(next);
   if (imStore) imStore.config = next;
-  // 停止时：若随后会重启则不弹「已关闭」；否则弹
+  // 停止时：若随后会重启则不弹「已关闭」；否则弹（stopImBridge 内部已发下线消息+清心跳标记）
   stopImBridge({ silent: willRun });
   if (willRun) startImBridge();
-  else if (wasRunning) notify('QQ 机器人', '已关闭');
   return { ok: true };
 });
 
@@ -910,7 +1024,17 @@ async function quit() {
     }
   }
   if (usage) usage.stop();
-  stopImBridge({ silent: true }); // 退出时静默关闭（不弹"已关闭"通知）
+  // 退出：先尽力发 QQ 下线消息 + 清心跳标记，再静默停桥接（避免 app.quit 途中再发）
+  try {
+    const a = imStore && imStore.adapters && imStore.adapters[0];
+    if (a) {
+      sendImOfflineMessage(a);
+      clearImOnlineFlag();
+    }
+  } catch {
+    /* ignore */
+  }
+  stopImBridge({ silent: true }); // 退出时静默关闭（不弹"已关闭"通知，下线消息已发）
   app.quit();
 }
 
@@ -997,7 +1121,7 @@ async function init() {
 
     // QQ 机器人桥接（OneBot v11 / 官方）：服务就绪（manager ready）后按配置启动，
     // 保证通知顺序「先服务后机器人」；autoStart=true 时随启动自动开启，否则需手动开启
-    imStore = { config: loadImConfig(), mapper: null, bridge: null, configWin: null };
+    imStore = { config: loadImConfig(), mapper: null, bridge: null, configWin: null, adapters: [] };
 
     createTrayUI();
     setupJumpList();

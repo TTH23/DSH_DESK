@@ -34,6 +34,8 @@ const HELP_TEXT = [
   '/compact     压缩会话历史（摘要替换旧记录）',
   '/approve     允许工具执行（审批按钮，也可手输 /approve <id>）',
   '/reject      拒绝工具执行（审批按钮，也可手输 /reject <id>）',
+  '/mtoggle     多选开关（点选项切换 ✅ 选中）',
+  '/mdone       多选完成提交',
   '/queue       查看排队状态',
   '',
   '【说明】',

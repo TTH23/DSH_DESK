@@ -457,7 +457,7 @@ test('未绑定会话 → 首次收欢迎、之后提示绑定；/ws + /ses 选�
   assert.strictEqual(mapper.get('qq', '111').sessionId, 's-1');
 });
 
-test('会话无标题时可用 ID 前缀选中（pick 前缀匹配）', async (t) => {
+test('会话无标题时可用 ID 前缀选中（pick 前缀匹配；列表不显示空白对话）', async (t) => {
   const { mapper } = setup(t);
   const mockDsh = await makeMockDsh(t, [
     { sessionId: 'session-a1', title: '', running: false },
@@ -466,14 +466,21 @@ test('会话无标题时可用 ID 前缀选中（pick 前缀匹配）', async (t
   const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
   await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
 
-  // 先选工作区（默认 ws-1 含两个会话），选完自动弹会话引导，再 /ses 列列表
+  // 先选工作区（默认 ws-1 含两个会话），选完自动弹会话引导
   mockBot.pushPrivate(111, '/ws');
   await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('项目A')));
   mockBot.pushPrivate(111, '/ws 项目A');
   await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('选择会话')));
 
+  // 无标题会话不显示在列表（不出现空白对话）
+  mockBot.pushPrivate(111, '/ses');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('选择会话')));
+  const listText = sendActionsOf(mockBot, 'send_private_msg').map((a) => String(a.params.message)).join('\n');
+  assert.ok(!listText.includes('session-a1') && !listText.includes('session-b2'), '无标题会话不应显示在列表');
+
+  // 但显式 ID 前缀仍可选（用名称兜底「未命名会话」）
   mockBot.pushPrivate(111, '/ses session-a');
-  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('会话 → session-a1')));
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('未命名会话')));
   assert.strictEqual(mapper.get('qq', '111').sessionId, 'session-a1');
 });
 
@@ -774,11 +781,12 @@ test('官方适配器：/ws 列表带按钮；点击按钮 → 当作命令执�
   await new Promise((r) => setTimeout(r, 100));
   assert.strictEqual(mapper.get('qqofficial', 'openid-1').workspaceId, 'ws-1');
 
-  // /ses → 附带会话按钮
+  // /ses → 附带会话按钮（列表显示标题，不再显示 session ID 字节）
   await bridge.handleMessage({ adapter, platform: 'qqofficial', chat: { type: 'private', id: 'openid-1' }, senderId: 'openid-1', text: '/ses' });
   await new Promise((r) => setTimeout(r, 100));
-  const sesMsg = adapter.sent.find((a) => String(a.text).includes('s-1'));
+  const sesMsg = adapter.sent.find((a) => String(a.text).includes('会话A'));
   assert.ok(sesMsg && sesMsg.opts && sesMsg.opts.keyboard, '/ses 应附带会话按钮');
+  assert.ok(!String(sesMsg.text).includes('s-1'), '会话列表不应显示 session ID');
   assert.ok(adapter.cmds.includes('/ses s-1'), '按钮命令应编码 /ses s-1');
   const sesLabel = sesMsg.opts.keyboard.rows[0].buttons[0].label;
   assert.strictEqual(sesLabel, '会话A', '会话按钮 label 应为会话标题');
@@ -923,6 +931,28 @@ test('按钮点击填入的 /xxx+yyy 与 /xxx yyy 等价（+ 还原为空格）'
   assert.strictEqual(mapper.get('qq', '111').workspaceId, 'ws-1', '/ws+项目A 应绑定工作区');
 });
 
+test('旧版面板按钮 /bot+xxx（平台缓存）→ 归一化为短命令执行', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  // 旧菜单/面板点击 → QQ 填入 /bot+usage 或 /bot+ws+项目A（URL 编码空格为 +）
+  // usageFn 未注入 → /usage 会回"用量不可用"，但仍应被识别为机器人命令（不提交对话）
+  mockBot.pushPrivate(111, '/bot+usage');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('用量不可用') || String(a.params.message).includes('余额')));
+  assert.strictEqual(mockDsh.state.prompts.length, 0, '/bot+usage 不应透传给 dsh');
+
+  mockBot.pushPrivate(111, '/bot+ws+项目A');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('选择会话')));
+  assert.strictEqual(mapper.get('qq', '111').workspaceId, 'ws-1', '/bot+ws+项目A 应还原为 /ws 项目A');
+
+  // /bot 空格形式同样兼容
+  mockBot.pushPrivate(111, '/bot ses');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('会话A')));
+});
+
 test('/help 返回机器人帮助（未绑定也能查，不触发对话）', async (t) => {
   const { mapper } = setup(t);
   const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
@@ -1015,7 +1045,7 @@ test('/compact 透传 dsh 原生压缩命令并回显结果', async (t) => {
   assert.ok(sent.length > 0);
 });
 
-test('工具结果独立消息：tool/call + tool/result → 单独发送（不进回复正文）', async (t) => {
+test('工具结果独立气泡：🔧 一行实时发送，正文完成时单独一条', async (t) => {
   const { mapper } = setup(t);
   const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
   const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
@@ -1026,13 +1056,18 @@ test('工具结果独立消息：tool/call + tool/result → 单独发送（不�
   mockBot.pushPrivate(111, '帮我看看');
   await waitFor(() => mockBot.sent.some((a) => /已提交|已加入队列/.test(String(a.params.message))));
 
-  // 模拟 mux 流：tool/call → tool/result
+  // 建立 busy 基线（轮询观察到 running=true）
+  mockDsh.state.sessions[0].running = true;
+  await waitFor(() => bridge.busy.get('s-1') === true);
+
+  // 模拟 mux 流：tool/call → tool/result（成功 → 独立气泡一行，实时发）
   mockDsh.pushMux({ type: 'session/event', sessionId: 's-1', event: { type: 'tool/call', data: { callId: 'call-1', name: 'pwsh', arguments: '{}' } } });
   mockDsh.pushMux({
     type: 'session/event',
     sessionId: 's-1',
     event: {
       type: 'tool/result',
+      seq: 5,
       data: {
         message: {
           source: { callId: 'call-1' },
@@ -1041,9 +1076,16 @@ test('工具结果独立消息：tool/call + tool/result → 单独发送（不�
       },
     },
   });
+  // 工具行应实时单独发（一行，不含正文、不含原始输出）
   await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('🔧 `pwsh` 完成')));
   const toolMsg = sendActionsOf(mockBot, 'send_private_msg').map((a) => String(a.params.message)).find((m) => m.includes('🔧'));
-  assert.ok(toolMsg.includes('命令输出内容 abc'), '工具结果应含输出文本');
+  assert.ok(!toolMsg.includes('命令输出内容 abc'), '工具气泡不带原始输出（避免刷屏）');
+
+  // 完成 → 正文独立一条
+  mockDsh.state.sessions[0].running = false;
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('任务完成')));
+  const done = sendActionsOf(mockBot, 'send_private_msg').map((a) => String(a.params.message)).join('\n');
+  assert.ok(done.includes('这是回复内容'), '完成消息应含正文');
 });
 
 test('工具结果：错误结果优先展示（isError / error 字段）', async (t) => {
@@ -1147,4 +1189,34 @@ test('远程提问：question/requested → QQ 按钮 → /answer 批量提交',
   const resp = mockDsh.state.responses[0];
   assert.strictEqual(resp.rpcId, 'rpc-q-1');
   assert.deepStrictEqual(resp.result.value.answer, { answers: [{ id: 'q-1', selected: ['方案B'] }] });
+});
+
+test('远程提问多选：/mtoggle 切换选中 → /mdone 提交 selected[]', async (t) => {
+  const { mapper } = setup(t);
+  const mockDsh = await makeMockDsh(t, [{ sessionId: 's-1', title: '会话A', running: false }]);
+  const mockBot = await makeMockOneBot(t, { allowUsers: [111] });
+  const { bridge } = await startBridgeAndWait(t, { mockDsh, mockBot, mapper });
+  mapper.set('qq', '111', { sessionId: 's-1', workspaceId: 'ws-1' });
+
+  mockBot.pushPrivate(111, '选几个');
+  await waitFor(() => mockBot.sent.some((a) => /已提交|已加入队列/.test(String(a.params.message))));
+
+  mockDsh.pushMux(
+    { type: 'question/requested', sessionId: 's-1', questions: [{ id: 'q-m', question: '多选：喜欢哪些？', multiSelect: true, options: [{ label: '红' }, { label: '蓝' }, { label: '绿' }] }] },
+    'rpc-q-m'
+  );
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('多选')));
+
+  // 点「蓝」「绿」两个开关（先选蓝，再选绿；toggle 已选中的会取消）
+  mockBot.pushPrivate(111, '/mtoggle rpc-q-m 0 1');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('✅ 已选')));
+  mockBot.pushPrivate(111, '/mtoggle rpc-q-m 0 2');
+  await waitFor(() => mockBot.sent.some((a) => String(a.params.message).includes('蓝、绿')));
+
+  // 提交
+  mockBot.pushPrivate(111, '/mdone rpc-q-m 0');
+  await waitFor(() => mockDsh.state.responses.length === 1);
+  const resp = mockDsh.state.responses[0];
+  assert.strictEqual(resp.rpcId, 'rpc-q-m');
+  assert.deepStrictEqual(resp.result.value.answer, { answers: [{ id: 'q-m', selected: ['蓝', '绿'] }] });
 });

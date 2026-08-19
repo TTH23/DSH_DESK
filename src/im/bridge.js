@@ -23,9 +23,9 @@ function sameChat(a, b) {
   return a && b && a.type === b.type && String(a.id) === String(b.id);
 }
 
-/** 短命令白名单：/ws /ses /setting /status /usage /history /model /stop /queue /compact /approve /reject /answer /help
+/** 短命令白名单：/ws /ses /setting /status /usage /history /model /stop /queue /compact /approve /reject /answer /mtoggle /mdone /help
  * 直接作为机器人命令；其余 / 开头仍透传 dsh */
-const SHORT_CMDS = new Set(['ws', 'ses', 'setting', 'status', 'usage', 'history', 'model', 'stop', 'queue', 'compact', 'approve', 'reject', 'answer', 'help']);
+const SHORT_CMDS = new Set(['ws', 'ses', 'setting', 'status', 'usage', 'history', 'model', 'stop', 'queue', 'compact', 'approve', 'reject', 'answer', 'mtoggle', 'mdone', 'help']);
 function SHORT_CMD(text) {
   const s = String(text || '').trim();
   const m = /^\/([a-z]+)(?:[+\s](.*))?$/i.exec(s);
@@ -34,6 +34,16 @@ function SHORT_CMD(text) {
   if (!SHORT_CMDS.has(name)) return null;
   const rest = (m[2] || '').replace(/\+/g, ' ').trim();
   return rest ? `${name} ${rest}` : name;
+}
+
+/** 兼容旧版面板/菜单按钮：/bot xxx 或 /bot+xxx（QQ 平台 URL 编码空格为 +）→ 还原为短命令 /xxx。
+ * 非 /bot 开头返回 null（保持原样）。 */
+function normalizeBotCmd(text) {
+  const s = String(text || '').trim();
+  if (!/^\/bot[+\s]/i.test(s)) return null;
+  const rest = s.replace(/^\/bot/i, '').replace(/\+/g, ' ').trim();
+  // 还原为带 / 的短命令（/bot+usage → /usage），保持后续 SHORT_CMD 识别一致
+  return rest ? '/' + rest.replace(/^\//, '') : null;
 }
 
 /** 按标题/id/序号匹配（精确优先，其次 ID 前缀，再标题包含；纯数字 = 列表序号 1 起） */
@@ -88,12 +98,11 @@ function shortLabel(s) {
   return str.slice(0, 9) + '…';
 }
 
-/** 会话展示：标题 + 运行标记（归档会话已在列表阶段排除，不再用 blank 区分）；idx 从 0 起，显示 1 起 */
+/** 会话展示：标题 + 运行标记（归档会话已在列表阶段排除）；idx 从 0 起，显示 1 起。
+ * 标题为空显示「未命名会话」；不显示 session ID 字节（用户看到的都是可读名称）。 */
 function sessionLine(s, idx) {
-  const title = sessionTitleOf(s) || '(未命名)';
-  // ID 只显示前 8 位（完整 ID 太长，选择用编号或按钮即可）
-  const shortId = (s.sessionId || '').slice(0, 8);
-  return `${idx + 1}. ${title}${s.running ? '（运行中）' : ''}${shortId ? ` [${shortId}]` : ''}`;
+  const title = sessionTitleOf(s) || '未命名会话';
+  return `${idx + 1}. ${title}${s.running ? '（运行中）' : ''}`;
 }
 
 class ImBridge extends EventEmitter {
@@ -268,23 +277,27 @@ class ImBridge extends EventEmitter {
     // 首次使用欢迎：频道从未绑定且从未欢迎过 → 发欢迎并持久化标记（重启不重复）
     const chatId = chatIdOf(chat);
     const binding = this.mapper.get(platform, chatId);
+    // 兼容旧面板/菜单按钮：/bot+xxx 或 /bot xxx（QQ 平台 URL 编码空格为 +）→ 还原为短命令。
+    // 面板数据是平台侧缓存，可能仍是旧版指令；代码侧归一化保证点击立即生效。
+    const legacy = normalizeBotCmd(text);
+    const effectiveText = legacy !== null ? legacy : text;
     if (!binding) {
       this.mapper.set(platform, chatId, { welcomed: true });
       // 短命令 与 /help 视为"立即响应"命令：欢迎后继续处理（不拦截）
-      const isBotCmd = SHORT_CMD(text) !== null || text.trim().toLowerCase() === '/help';
+      const isBotCmd = SHORT_CMD(effectiveText) !== null || effectiveText.trim().toLowerCase() === '/help';
       this._reply(chat, WELCOME_TEXT, adapter);
       this._log('welcomed channel', chatId);
       if (!isBotCmd) return; // 普通文本/斜杠命令：先引导，不再追加"未绑定"提示
     }
 
     // 命令识别：短命令 /xxx 直接作为机器人命令，其余 / 开头仍透传 dsh（如 /plan、/goal）
-    const short = SHORT_CMD(text);
+    const short = SHORT_CMD(effectiveText);
     if (short !== null) {
       await this._handleControl(adapter, platform, chat, chatId, short);
       return;
     }
     // /help → 机器人帮助（未绑定也能查）
-    if (text.trim().toLowerCase() === '/help') {
+    if (effectiveText.trim().toLowerCase() === '/help') {
       this._reply(chat, HELP_TEXT, adapter);
       return;
     }
@@ -299,7 +312,7 @@ class ImBridge extends EventEmitter {
       return;
     }
     // / 开头（非机器人命令）→ dsh 原生斜杠命令透传
-    await this._prompt(adapter, platform, chat, text, { slash: text.startsWith('/'), msg });
+    await this._prompt(adapter, platform, chat, effectiveText, { slash: effectiveText.startsWith('/'), msg });
   }
 
   async _prompt(adapter, platform, chat, text, { slash = false, msg = null } = {}) {
@@ -373,7 +386,7 @@ class ImBridge extends EventEmitter {
     const hint = supportsBtn ? `👆 选择会话 · ${scope}（点下方按钮，或回复编号）：\n` : `选择会话 · ${scope}（回复编号）：\n`;
     const lines = shown.map(sessionLine);
     const text = lines.length ? hint + lines.join('\n') : `（${scope}下暂无会话）`;
-    this._reply(chat, text, adapter, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名'), cmd: `/ses ${s.sessionId}` })) } : null);
+    this._reply(chat, text, adapter, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名会话'), cmd: `/ses ${s.sessionId}` })) } : null);
   }
 
   // ---------- 控制指令 ----------
@@ -416,14 +429,17 @@ class ImBridge extends EventEmitter {
           const sessions = await this.dsh.listSessions();
           const all = (sessions && sessions.items) || [];
           const notArchived = (s) => !archivedIds.has(s.sessionId);
-          const items = boundWs && Array.isArray(boundWs.sessionIds)
+          // 列表过滤无标题会话（避免「空白对话」）与归档；但 arg 明确指定时用全量匹配（ID 前缀/编号仍可选）
+          const named = (s) => Boolean(sessionTitleOf(s));
+          const base = boundWs && Array.isArray(boundWs.sessionIds)
             ? all.filter((s) => boundWs.sessionIds.includes(s.sessionId)).filter(notArchived)
             : all.filter(notArchived);
+          const items = base.filter(named);
           if (arg) {
-            const hit = pick(items, arg);
+            const hit = pick(base, arg);
             if (!hit) return reply('❌ 未找到会话');
             this.mapper.set(platform, chatId, { sessionId: hit.sessionId, sessionTitle: hit.title });
-            return reply(`✅ 会话 → ${hit.title || hit.sessionId}\n绑定完成，直接发消息即可对话。`);
+            return reply(`✅ 会话 → ${sessionTitleOf(hit) || '未命名会话'}\n绑定完成，直接发消息即可对话。`);
           }
           const scope = boundWs ? `当前工作区（${boundWs.title}）` : '全部（未绑定工作区）';
           const shown = items.slice(0, 20);
@@ -432,7 +448,7 @@ class ImBridge extends EventEmitter {
           const hint = supportsBtn ? `点下方按钮，或回复编号选择会话 · ${scope}：\n` : `回复编号选择会话 · ${scope}：\n`;
           const text = lines.length ? hint + lines.join('\n') : `（${scope}下暂无会话）`;
           // 按钮 label 用会话标题（超长省略）；指令 = /ses <完整ID>
-          return reply(text, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名'), cmd: `/ses ${s.sessionId}` })) } : null);
+          return reply(text, supportsBtn ? { keyboard: keyboardOf(shown, (s) => ({ label: shortLabel(sessionTitleOf(s) || '未命名会话'), cmd: `/ses ${s.sessionId}` })) } : null);
         }
         case 'model': {
           if (!binding || !binding.sessionId) return reply('先 /ses 绑定会话');
@@ -556,7 +572,7 @@ class ImBridge extends EventEmitter {
             `闲置自动退出：${idle > 0 ? idle + ' 分钟' : '不退出'}`,
             `非QQ任务推送：${nm === 'brief' ? '短固定提醒' : nm === 'none' ? '不提醒' : '全文推送'}`,
           ];
-          if (binding && binding.sessionId) lines.push(`当前会话：${binding.sessionTitle || binding.sessionId}`);
+          if (binding && binding.sessionId) lines.push(`当前会话：${binding.sessionTitle || '未命名会话'}`);
           lines.push('点下方按钮修改设置：');
           const mainBtns = [
             { label: '闲置自动退出', cmd: '/setting idle' },
@@ -604,28 +620,47 @@ class ImBridge extends EventEmitter {
           }
         }
         case 'answer': {
-          // 远程提问应答：/answer <rpcId> <questionIdx> <optionIdx>
+          // 单选应答：/answer <rpcId> <questionIdx> <optionIdx>
           const [rid, qi, oi] = (arg || '').split(/\s+/);
           const rec = rid ? this.pendingQuestions.get(rid) : null;
           if (!rec) return reply('⚠️ 该提问不存在、已处理或已超时');
           const q = rec.questions[Number(qi)];
           if (!q) return reply('⚠️ 问题索引无效');
+          if (q.multiSelect === true) return reply('⚠️ 该问题为多选，请用 /mtoggle 切换选中、/mdone 提交');
           const opts = Array.isArray(q.options) && q.options.length ? q.options : [{ label: '确认', value: 'ok' }];
           const opt = opts[Number(oi)];
           if (!opt) return reply('⚠️ 选项索引无效');
+          const label = typeof opt === 'string' ? opt : opt.label || String(opt.value);
+          const qid = q.id || String(Number(qi));
+          rec.answers = rec.answers || [];
+          rec.answers = rec.answers.filter((a) => a.id !== qid);
+          rec.answers.push({ id: qid, selected: [label] });
+          // 若还有未答的多选问题 → 不提交，等 /mdone；否则立即应答
+          const multiPending = rec.questions.some((qq, idx) => qq.multiSelect === true && !(rec.answers || []).some((a) => a.id === (qq.id || String(idx))));
+          if (multiPending) {
+            this._renderQuestion(rec, 'dsh 提问（已更新）');
+            return null;
+          }
           if (rec.timer) clearTimeout(rec.timer);
           this.pendingQuestions.delete(rid);
-          const label = typeof opt === 'string' ? opt : opt.label || String(opt.value);
-          const answers = rec.questions.map((qq) => ({
-            id: qq.id || String(rec.questions.indexOf(qq)),
-            selected: qq === q ? [label] : [],
-          }));
           try {
-            await this.dsh.respond(rec.rpcId, { sessionId: rec.sessionId, answer: { answers } });
+            await this.dsh.respond(rec.rpcId, { sessionId: rec.sessionId, answer: { answers: rec.answers } });
             return reply(`✅ 已提交回答：${label}`);
           } catch (err) {
             return reply(`❌ 应答失败：${err.message}`);
           }
+        }
+        case 'mtoggle': {
+          // 多选开关：/mtoggle <rpcId> <qIdx> <oIdx>
+          const [rid, qi, oi] = (arg || '').split(/\s+/);
+          const msg = this._handleQuestionToggle(rid, qi, oi);
+          return msg ? reply(msg) : undefined; // 成功时已重渲染
+        }
+        case 'mdone': {
+          // 多选提交：/mdone <rpcId> <qIdx>
+          const [rid, qi] = (arg || '').split(/\s+/);
+          const msg = await this._handleQuestionDone(rid, qi);
+          return msg ? reply(msg) : undefined; // 未全部完成时已重渲染
         }
         case 'status': {
           const st = this.status();
@@ -668,8 +703,8 @@ class ImBridge extends EventEmitter {
           this.toolCalls.set(d.callId, { name: d.name || 'tool', arguments: d.arguments || '', sessionId: p.sessionId });
         }
       } else if (ev.type === 'tool/result') {
-        // 工具结果：格式化为独立消息发给 prompter 频道（截断信息流，避免刷屏）
-        this._handleToolResult(p.sessionId, ev);
+        // 工具结果：记录进会话流（完成时按序整合，一行 🔧 name 完成），错误实时单独提示
+        this._recordToolResult(p.sessionId, ev);
       }
     } else if (p.type === 'session/queue') {
       this.queueState.set(p.sessionId, p.items || []);
@@ -690,19 +725,17 @@ class ImBridge extends EventEmitter {
     }
   }
 
-  /** 工具结果 → 独立消息（发给该会话的 prompter 频道；无 prompter 则跳过） */
-  _handleToolResult(sessionId, ev) {
-    const prompter = this.prompter.get(sessionId);
-    if (!prompter) return;
+  /** 工具结果 → 独立气泡实时发送（一行 🔧 name 完成），与正文分开、按时间顺序自然排列。
+   * 工具行在前、正文在后，各自独立气泡，起到分割信息流的作用。 */
+  _recordToolResult(sessionId, ev) {
     const d = ev.data || {};
     const msg = d.message || {};
     const source = msg.source || {};
     const call = this.toolCalls.get(source.callId);
     const name = (call && call.name) || 'tool';
     const blocks = Array.isArray(msg.content) ? msg.content : [];
-    // 提取 tool-result 块文本：content[].content[].text
-    let text = '';
     let isError = false;
+    let text = '';
     for (const b of blocks) {
       if (!b || b.type !== 'tool-result') continue;
       if (b.isError) isError = true;
@@ -712,14 +745,12 @@ class ImBridge extends EventEmitter {
       }
     }
     if (d.error) isError = true;
-    // 格式化（截断 1500 字符防刷屏）
+    const prompter = this.prompter.get(sessionId);
+    if (!prompter) return; // 非 QQ 发起任务不打扰
+    // 一行气泡：成功「🔧 name 完成」；失败「❌ 工具 name 失败」（附截断原因，不刷屏）
     const body = isError
-      ? `❌ 工具 \`${name}\` 失败${text ? '\n```\n' + truncate(text, 1500) + '\n```' : ''}`
-      : text
-        ? `🔧 \`${name}\` 完成\n\`\`\`\n${truncate(text, 1500)}\n\`\`\``
-        : null;
-    if (body === null) return;
-    // 单条消息过长时交给适配器分片；独立发送，不进回复正文
+      ? `❌ 工具 \`${name}\` 失败${text ? '\n```\n' + truncate(text, 400) + '\n```' : ''}`
+      : `🔧 \`${name}\` 完成`;
     const chat = prompter.chat;
     const adapter = this._adapterFor(prompter.platform);
     if (adapter) this._reply(chat, body, adapter);
@@ -780,7 +811,8 @@ class ImBridge extends EventEmitter {
     return this.dsh.respond(rpcId, { sessionId, approvalId, outcome });
   }
 
-  /** question/requested：dsh ask() 提问 → QQ 按钮（每个问题一个选项按钮，一次答全部） */
+  /** question/requested：dsh ask() 提问 → QQ 按钮。
+   * 单选：每选项一个按钮直接答；多选（multiSelect）：每选项开关按钮 + 「✔ 完成」提交。 */
   _handleQuestionRequested(rpcId, p) {
     const prompter = this.prompter.get(p.sessionId);
     if (!prompter) return;
@@ -788,23 +820,106 @@ class ImBridge extends EventEmitter {
     if (!questions.length) return;
     const chat = prompter.chat;
     const platform = prompter.platform;
-    const adapter = this._adapterFor(platform);
-    // 每个问题：标题 + 选项按钮（optionIdx 编码到 cmd）
-    const lines = questions.map((q, i) => `${i + 1}. ${q.question || q.text || '问题'}${q.detail ? '\n   ' + q.detail : ''}`);
-    const text = `❓ dsh 提问：\n${lines.join('\n')}\n（点下方按钮作答，60 秒内有效）`;
-    const buttons = [];
-    questions.forEach((q, i) => {
-      const opts = Array.isArray(q.options) && q.options.length ? q.options : [{ label: '确认', value: 'ok' }];
-      opts.forEach((o, j) => {
-        buttons.push({ label: typeof o === 'string' ? o : o.label || o.value || '确认', cmd: `/answer ${rpcId} ${i} ${j}` });
-      });
-    });
-    const rec = { rpcId, questions, sessionId: p.sessionId, chat, platform, timer: null };
+    // 多选选中态：qIdx → Set(optionIdx)
+    const selection = new Map();
+    const rec = { rpcId, questions, sessionId: p.sessionId, chat, platform, selection, timer: null };
     rec.timer = setTimeout(() => {
       this.pendingQuestions.delete(rpcId);
     }, 60000);
     this.pendingQuestions.set(rpcId, rec);
-    this._reply(chat, text, adapter, adapter && adapter.supportsKeyboard ? { keyboard: keyboardOf(buttons, (b) => ({ label: shortLabel(b.label), cmd: b.cmd }), { perRow: 3 }) } : null);
+    this._renderQuestion(rec, 'dsh 提问');
+  }
+
+  /** 渲染一条提问（含多选当前选中态），带按钮 */
+  _renderQuestion(rec, prefix) {
+    const adapter = this._adapterFor(rec.platform);
+    const lines = rec.questions.map((q, i) => {
+      const sel = rec.selection && rec.selection.get(i);
+      const multi = q.multiSelect === true;
+      const base = `${i + 1}. ${q.question || q.text || '问题'}${q.detail ? '\n   ' + q.detail : ''}`;
+      if (!multi || !sel || !sel.size) return base;
+      const opts = Array.isArray(q.options) ? q.options : [];
+      const picked = [...sel].map((j) => (opts[j] && (typeof opts[j] === 'string' ? opts[j] : opts[j].label || opts[j].value)) || j);
+      return `${base}\n   ✅ 已选：${picked.join('、')}`;
+    });
+    const text = `❓ ${prefix}：\n${lines.join('\n')}\n${this._questionHint(rec)}\n（60 秒内有效）`;
+    const buttons = [];
+    rec.questions.forEach((q, i) => {
+      const opts = Array.isArray(q.options) && q.options.length ? q.options : [{ label: '确认', value: 'ok' }];
+      const multi = q.multiSelect === true;
+      opts.forEach((o, j) => {
+        const label = typeof o === 'string' ? o : o.label || o.value || '确认';
+        if (multi) {
+          // 多选：开关按钮（已选显示 ✅）
+          const picked = rec.selection && rec.selection.get(i) && rec.selection.get(i).has(j);
+          buttons.push({ label: (picked ? '✅ ' : '') + shortLabel(label), cmd: `/mtoggle ${rec.rpcId} ${i} ${j}` });
+        } else {
+          buttons.push({ label: shortLabel(label), cmd: `/answer ${rec.rpcId} ${i} ${j}` });
+        }
+      });
+      if (multi) {
+        // 多选问题末尾加「完成提交」
+        buttons.push({ label: '✔ 完成', cmd: `/mdone ${rec.rpcId} ${i}` });
+      }
+    });
+    this._reply(rec.chat, text, adapter, adapter && adapter.supportsKeyboard ? { keyboard: keyboardOf(buttons, (b) => ({ label: b.label, cmd: b.cmd }), { perRow: 3 }) } : null);
+  }
+
+  /** 提问的操作提示（多选/单选） */
+  _questionHint(rec) {
+    const multi = rec.questions.some((q) => q.multiSelect === true);
+    return multi ? '（多选：点选项切换选中 ✅，选完点「✔ 完成」提交；单选：点选项直接提交）' : '（点下方按钮作答）';
+  }
+
+  /** 多选开关：/mtoggle <rpcId> <qIdx> <oIdx> → 切换选中并重渲染 */
+  _handleQuestionToggle(rpcId, qi, oi) {
+    const rec = this.pendingQuestions.get(rpcId);
+    if (!rec) return '⚠️ 该提问不存在、已处理或已超时';
+    const q = rec.questions[Number(qi)];
+    if (!q || q.multiSelect !== true) return '⚠️ 该问题不支持多选';
+    const sel = rec.selection.get(Number(qi)) || new Set();
+    if (sel.has(Number(oi))) sel.delete(Number(oi));
+    else sel.add(Number(oi));
+    rec.selection.set(Number(qi), sel);
+    this._renderQuestion(rec, 'dsh 提问（已更新）');
+    return null; // 已通过重渲染回复
+  }
+
+  /** 多选完成：/mdone <rpcId> <qIdx> → 提交该问题的选中集合 */
+  async _handleQuestionDone(rpcId, qi) {
+    const rec = this.pendingQuestions.get(rpcId);
+    if (!rec) return '⚠️ 该提问不存在、已处理或已超时';
+    const q = rec.questions[Number(qi)];
+    if (!q || q.multiSelect !== true) return '⚠️ 该问题不支持多选';
+    const opts = Array.isArray(q.options) && q.options.length ? q.options : [];
+    const sel = rec.selection.get(Number(qi)) || new Set();
+    const selected = [...sel].map((j) => (opts[j] && (typeof opts[j] === 'string' ? opts[j] : opts[j].label || opts[j].value)) || String(j));
+    // 一个 rpcId 可能含多个问题：多选问题各自 /mdone 提交，全部答完后 respond
+    const qid = q.id || String(Number(qi));
+    rec.done = rec.done || new Set();
+    rec.done.add(Number(qi));
+    rec.answers = rec.answers || [];
+    // 该问题的答案（替换已存在的同 id）
+    const others = (rec.answers || []).filter((a) => a.id !== qid);
+    rec.answers = [...others, { id: qid, selected }];
+    // 是否所有问题都已答（多选=done，单选=已在 /answer 时记入）
+    const allAnswered = rec.questions.every((qq, idx) => {
+      if (qq.multiSelect === true) return rec.done.has(idx);
+      return (rec.answers || []).some((a) => a.id === (qq.id || String(idx)));
+    });
+    if (allAnswered) {
+      if (rec.timer) clearTimeout(rec.timer);
+      this.pendingQuestions.delete(rpcId);
+      try {
+        await this.dsh.respond(rec.rpcId, { sessionId: rec.sessionId, answer: { answers: rec.answers } });
+        return `✅ 已提交回答：${selected.join('、') || '（未选择）'}`;
+      } catch (err) {
+        return `❌ 应答失败：${err.message}`;
+      }
+    }
+    // 还有未答 → 重渲染提示继续
+    this._renderQuestion(rec, 'dsh 提问（已更新）');
+    return null;
   }
 
   async _pollRunning(token) {
@@ -837,7 +952,7 @@ class ImBridge extends EventEmitter {
     for (const [callId, c] of Array.from(this.toolCalls.entries())) {
       if (c && c.sessionId === item.sessionId) this.toolCalls.delete(callId);
     }
-    const title = sessionTitleOf(item) || item.sessionId;
+    const title = sessionTitleOf(item) || '未命名会话';
 
     // 正文来源：优先 history（完整回复，含流式 chunk 合并后的 assistant/message）；
     // replyBuf（mux 实时累积）可能只收到部分 chunk（曾导致正文只有开头一段）。
@@ -861,6 +976,8 @@ class ImBridge extends EventEmitter {
     // history 未取到时回退 replyBuf（实时累积）
     if (!accText && acc && acc.text) accText = acc.text;
     const accBody = accText ? { text: accText, think: (acc && acc.think) || '' } : acc;
+    // 工具行已在工具完成时作为独立气泡实时发送（🔧 name 完成），正文这里单独一条
+    const body = renderAccumulated(accBody, MODE_PURE);
 
     for (const [key, b] of Object.entries(this.mapper.all())) {
       if (b.sessionId !== item.sessionId) continue;
@@ -870,7 +987,6 @@ class ImBridge extends EventEmitter {
       const adapter = this._adapterFor(platform);
       if (!adapter) continue;
       const isPrompter = prompter && prompter.platform === platform && sameChat(prompter.chat, chat);
-      const body = renderAccumulated(accBody, MODE_PURE);
       // 引用用户原文：官方 message_reference.message_id = 用户消息事件的 d.id（prompter.msgId）
       const refOpts = isPrompter && prompter.msgId ? { messageReference: { message_id: prompter.msgId } } : null;
       // 推送策略：prompter（QQ 发起的任务）始终全文；非 prompter 按 notifyMode：
@@ -883,7 +999,7 @@ class ImBridge extends EventEmitter {
           continue;
         }
       }
-      // 全文推送（prompter 或 full 模式）
+      // 全文推送（prompter 或 full 模式）：正文独立一条（工具行已实时单独发过）
       this._reply(chat, body ? `✅ 任务完成「${title}」\n${body}` : `✅ 任务完成「${title}」`, adapter, refOpts);
     }
     // 系统通知：走共享去重通道（onTaskComplete，由 main.js 注入）——
