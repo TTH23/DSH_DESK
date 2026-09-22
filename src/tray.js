@@ -2,12 +2,11 @@
 // 系统托盘：图标（状态角标由主进程切换）+ 二级菜单
 // 主菜单只留常用操作；服务/用量/通知收进二级菜单，信息不再分散
 const { Tray, Menu, nativeImage } = require('electron');
-const { isPeak } = require('./usage');
+const { peakLabel } = require('./usage');
 
-// 峰谷计价状态标记：☼=高峰（贵，×2），☾=月亮=空闲（半价）。
+// 峰谷计价状态标记：☼=高峰（贵），☾=月亮=空闲（半价）。
 // 用 Segoe UI Symbol 文本符号而非彩色 emoji——托盘菜单渲染 emoji 会变方框/黑白块。
 const PEAK_MARK = { on: '☼', off: '☾' };
-const PEAK_LABEL = { on: '高峰', off: '空闲' };
 
 const STATUS_TEXT = {
   running: '运行中',
@@ -152,7 +151,7 @@ function createTray(opts) {
     const running = state === 'running';
     const stopped = state === 'stopped' || state === 'failed';
     const infoItems = [
-      { label: `${STATE_ICON[state] || '○'} ${statusText} ${isPeak(Date.now()) ? PEAK_MARK.on : PEAK_MARK.off}`, enabled: false },
+      { label: `${STATE_ICON[state] || '○'} ${statusText} ${peakLabel(Date.now()).peak ? PEAK_MARK.on : PEAK_MARK.off}`, enabled: false },
       ...usageInfoItems(),
     ];
     return Menu.buildFromTemplate([
@@ -191,11 +190,12 @@ function createTray(opts) {
   function refresh() {
     const info = opts.getState();
     const statusText = STATUS_TEXT[info.state] || info.state;
-    // 峰谷标记：☀=高峰（×2） / 🌙=空闲（半价），悬停可见，低调不打扰
-    const peakMark = isPeak(Date.now()) ? PEAK_MARK.on : PEAK_MARK.off;
-    const peakLabel = isPeak(Date.now()) ? PEAK_LABEL.on : PEAK_LABEL.off;
+    // 峰谷标记：☼=高峰 / ☾=空闲（周末、法定节假日全天为空闲），悬停可见，低调不打扰
+    const now = Date.now();
+    const pl = peakLabel(now);
+    const peakMark = pl.peak ? PEAK_MARK.on : PEAK_MARK.off;
     // tooltip 带金额：悬停即可查看余额与本次启动消费（无需右键）
-    let tip = `DSH Desk — ${statusText} ${peakMark} ${peakLabel}`;
+    let tip = `DSH Desk — ${statusText} ${peakMark} ${pl.text}`;
     if (typeof opts.getUsage === 'function') {
       const u = opts.getUsage();
       if (u && u.keyConfigured && !u.error) {

@@ -16,12 +16,15 @@ const { zstdDecompressSync } = require('node:zlib');
 const BALANCE_URL = 'https://api.deepseek.com/user/balance';
 
 // ========== 计价 ==========
-// 现行价（2026-08-17 00:00 北京时间起生效）：峰谷定价，元/百万 tokens
-// 高峰时段（北京时间）：9:00–12:00、14:00–18:00；空闲时段为高峰的一半
+// 现行价（2026-08-17 00:00 北京时间起生效的峰谷定价；价格表按官方最新公告更新），元/百万 tokens：
+//   flash：命中 0.02/0.04、未命中 1/2、输出 4/8（空闲/高峰）
+//   pro  ：命中 0.15/0.30、未命中 4.5/9、输出 13.5/27（空闲/高峰）
+// 高峰时段（北京时间）：**周一至周五（不含中国法定节假日）9:00–12:00、14:00–18:00**；
+// 其余时段（含周末、法定节假日全天）均为空闲，空闲价 = 高峰价的一半。
 const PRICING_V2 = {
   'deepseek-v4-flash': {
-    peak: { hit: 0.1, miss: 3.0, out: 9.0 },
-    offpeak: { hit: 0.05, miss: 1.5, out: 4.5 },
+    peak: { hit: 0.04, miss: 2.0, out: 8.0 },
+    offpeak: { hit: 0.02, miss: 1.0, out: 4.0 },
   },
   'deepseek-v4-pro': {
     peak: { hit: 0.3, miss: 9.0, out: 27.0 },
@@ -30,20 +33,59 @@ const PRICING_V2 = {
 };
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 
+/** 中国法定节假日（北京时间日期，YYYY-MM-DD）——按国务院办公厅放假安排维护。
+ * 落在周一至周五的节假日全天按空闲价计。如需更新，直接改此表即可。 */
+const CN_HOLIDAYS = new Set([
+  // 2026 年（春节 2/17、端午 6/19、中秋 9/25）
+  '2026-01-01', '2026-01-02', '2026-01-03', // 元旦
+  '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22', // 春节
+  '2026-04-04', '2026-04-05', '2026-04-06', // 清明
+  '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05', // 劳动节
+  '2026-06-19', '2026-06-20', '2026-06-21', // 端午
+  '2026-09-25', '2026-09-26', '2026-09-27', // 中秋
+  '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', // 国庆
+]);
+
 function dshHome() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 }
 
+/** 北京时区日期串（YYYY-MM-DD） */
+function beijingDateStr(ts) {
+  return new Date(ts + 8 * 3600e3).toISOString().slice(0, 10);
+}
+
+/** 是否中国法定节假日（北京时间） */
+function isHoliday(ts) {
+  return CN_HOLIDAYS.has(beijingDateStr(ts));
+}
+
+/** 是否高峰时段：周一至周五（不含法定节假日）的北京 9:00–12:00 / 14:00–18:00。
+ * 周末与法定节假日全天均为空闲。 */
 function isPeak(ts) {
   const d = new Date(ts + 8 * 3600e3); // 北京时间 = UTC+8
+  const dow = d.getUTCDay(); // 0=周日 6=周六
+  if (dow === 0 || dow === 6) return false; // 周末全天空闲
+  if (CN_HOLIDAYS.has(d.toISOString().slice(0, 10))) return false; // 法定节假日全天空闲
   const h = d.getUTCHours();
   return (h >= 9 && h < 12) || (h >= 14 && h < 18);
 }
 
+/** 峰谷时段描述（用于显示）：高峰 / 空闲（周末）/ 空闲（节假日）/ 空闲 */
+function peakLabel(ts) {
+  if (isPeak(ts)) return { peak: true, text: '高峰' };
+  const d = new Date(ts + 8 * 3600e3);
+  const dow = d.getUTCDay();
+  if (dow === 0 || dow === 6) return { peak: false, text: '空闲（周末）' };
+  if (CN_HOLIDAYS.has(d.toISOString().slice(0, 10))) return { peak: false, text: '空闲（节假日）' };
+  return { peak: false, text: '空闲' };
+}
+
 function modelKey(model) {
   const m = String(model || '').toLowerCase();
-  if (m.includes('deepseek-v4-pro')) return 'deepseek-v4-pro';
-  return DEFAULT_MODEL; // flash 与未知模型均按 flash 计
+  if (m.includes('pro')) return 'deepseek-v4-pro';
+  // flash / deepseek-flash / deepseek-v4-flash / 未知模型均按 flash 计
+  return DEFAULT_MODEL;
 }
 
 /** 单次用量事件费用（元）。usage: { inputTokens(未命中), cacheReadTokens(命中), cacheWriteTokens(缓存写入), outputTokens(输出) }
@@ -360,4 +402,4 @@ function fetchBalance() {
   });
 }
 
-module.exports = { UsageTracker, fetchBalance, readApiKey, costOfUsage, costOfProjection, isPeak, PRICING_V2 };
+module.exports = { UsageTracker, fetchBalance, readApiKey, costOfUsage, costOfProjection, isPeak, isHoliday, peakLabel, PRICING_V2, CN_HOLIDAYS };

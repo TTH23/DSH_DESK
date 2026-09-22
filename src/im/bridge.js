@@ -4,7 +4,7 @@
 const { EventEmitter } = require('node:events');
 const { MODE_PURE, MODE_ALL, renderHistory, truncate, textOfMessage, thinkTextOfMessage } = require('./render');
 const { WELCOME_TEXT, UNPROCESSABLE_TEXT, HELP_TEXT } = require('./help');
-const { costOfProjection } = require('../usage');
+const { costOfProjection, peakLabel } = require('../usage');
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -478,6 +478,9 @@ class ImBridge extends EventEmitter {
           if (u.error) return reply(`用量失败：${u.error}`);
           const fmt = (v) => (v === null || v === undefined ? '--' : Number(v).toFixed(2));
           const lines = [`💰 余额：¥${fmt(u.balance)}`];
+          // 当前峰谷时段（高峰价为空闲 2 倍；周末/法定节假日全天空闲）
+          const pl = peakLabel(Date.now());
+          lines.push(`当前计价：${pl.peak ? '☼' : '☾'} ${pl.text}${pl.peak ? '（价高）' : '（半价）'}`);
           // 当前会话 Token 用量与费用（dsh 投影统计，口径同 dsh-session-cost 插件：整会话累计）
           if (binding && binding.sessionId) {
             try {

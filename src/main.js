@@ -256,29 +256,44 @@ async function startImBridge() {
   bridge.setAdapters([{ name: config.mode, adapter }]);
   imStore.adapters = [adapter]; // 供停止/下线消息使用
   // 适配器生命周期诊断
+  let imOnlineNotifiedAt = 0; // 上次上线通知时间（重连刷屏防护）
+  let imDisconnectNotifiedAt = 0; // 上次断线通知时间（节流）
+  let imLastConnectedAt = 0; // 上次成功连接时间（判断断线时长）
   adapter.on('connected', () => {
     logIm('adapter connected');
+    const now = Date.now();
     // 官方机器人：连接后自动配置全局菜单/指令面板（幂等；失败仅记日志）
     if (config.mode === 'official' && typeof adapter.setMenu === 'function') {
       setupImMenu(adapter);
     }
-    // 上线提醒：系统通知 +（有绑定私聊频道时）主动发 QQ 消息
-    notifyIf('startup', 'QQ 机器人', `🤖 已上线（${config.mode === 'official' ? '官方机器人' : 'OneBot'}）`);
     try {
-      // 上次异常退出（强杀/崩溃）→ 提醒（先检查再写标记，避免误报）
-      if (consumeImAbnormalExitFlag()) {
+      // 上线提醒：仅在「首次连接」或「断线超过 60s 后恢复」时发，避免重连循环刷屏
+      const wasGone = imLastConnectedAt > 0 && now - imLastConnectedAt > 60000;
+      if (imOnlineNotifiedAt === 0 || wasGone) {
+        notifyIf('startup', 'QQ 机器人', `🤖 已上线（${config.mode === 'official' ? '官方机器人' : 'OneBot'}）`);
+        imOnlineNotifiedAt = now;
+      }
+      imLastConnectedAt = now;
+      // 上次异常退出（强杀/崩溃）→ 提醒（仅首次连接时，先检查再写标记，避免误报）
+      if (imOnlineNotifiedAt === now && consumeImAbnormalExitFlag()) {
         notifyIf('error', 'QQ 机器人', '⚠️ 检测到上次为非正常退出（强杀/崩溃/断电），本次已重新连接');
       }
       writeImOnlineFlag();
-      sendImOnlineMessage(adapter, config.mode === 'official' ? '官方机器人' : 'OneBot');
+      if (imOnlineNotifiedAt === now) {
+        sendImOnlineMessage(adapter, config.mode === 'official' ? '官方机器人' : 'OneBot');
+      }
     } catch {
       /* 上线消息失败忽略 */
     }
   });
   adapter.on('disconnected', (info) => {
     logIm(`adapter disconnected${info ? ' ' + JSON.stringify(info) : ''}`);
-    // 断线（非退出）：静默节流通知（重连时会再次触发 connected → 上线提醒）
-    notifyIf('error', 'QQ 机器人', '⚠️ 机器人连接断开，正在尝试重连…');
+    // 断线通知节流：30s 内只发一次（重连循环时避免刷屏）
+    const now = Date.now();
+    if (now - imDisconnectNotifiedAt > 30000) {
+      imDisconnectNotifiedAt = now;
+      notifyIf('error', 'QQ 机器人', '⚠️ 机器人连接断开，正在尝试重连…');
+    }
   });
   adapter.on('error', (e) => logIm(`adapter error: ${(e && e.message) || e}`));
   try {
